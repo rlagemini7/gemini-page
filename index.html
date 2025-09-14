@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemini 이미지 생성기 (참고 이미지 + 안전피드백)</title>
+<style>
+  :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; }
+  body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial;
+       color:var(--fg); background:var(--bg);
+       max-width:920px;margin:auto;padding:16px}
+  h2{margin:.2rem 0 1rem}
+  .row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
+  .btn{padding:.6rem .95rem;border:1px solid var(--b);border-radius:10px;background:#fff;color:#000;cursor:pointer}
+  .btn[disabled]{opacity:.5;cursor:default}
+  #viewer{border:1px solid var(--b);border-radius:10px;min-height:240px;
+          display:flex;align-items:center;justify-content:center;overflow:hidden}
+  #viewer img{max-width:100%;max-height:70vh}
+  textarea{width:100%;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+  #prompt{min-height:110px}
+  #b64{min-height:140px}
+  #raw{min-height:220px}
+  #msg{white-space:pre-wrap;color:var(--muted)}
+  .thumb{max-height:120px;border:1px solid var(--b);border-radius:8px}
+  .hint{font-size:.9rem;color:var(--muted)}
+  .cfg{font-size:.9rem;color:#333;background:#fafafa;border:1px dashed var(--b);border-radius:10px;padding:.6rem}
+  label{font-weight:600;display:block;margin-top:10px;margin-bottom:6px}
+</style>
+<body>
+  <h2>Gemini 이미지 생성기</h2>
+
+  <div class="cfg">
+    <div class="hint">아래 두 값만 바꾸면 됩니다.</div>
+    <div><strong>ENDPOINT</strong> = Cloud Run 공개 URL</div>
+    <div><strong>BEARER_TOKEN</strong> (선택) = 서버가 토큰을 요구하는 경우</div>
+  </div>
+
+  <div class="row" style="margin-top:10px">
+    <label for="endpoint" style="margin:0">엔드포인트</label>
+    <input id="endpoint" class="btn" style="flex:1;min-width:260px" placeholder="https://<your-cloud-run-url>">
+    <input id="token" class="btn" style="flex:1;min-width:200px" placeholder="(선택) Bearer 토큰">
+  </div>
+
+  <div class="row">
+    <input id="file" type="file" accept="image/*" class="btn">
+    <img id="thumb" class="thumb" alt="미리보기" style="display:none">
+  </div>
+
+  <label>프롬프트</label>
+  <textarea id="prompt">(선택) 참고 이미지를 바탕으로 같은 캐릭터의 다른 포즈를 SD풍 만화 스타일로. 1:1.</textarea>
+
+  <div class="row">
+    <button id="go" class="btn">🎨 이미지 만들기</button>
+    <button id="save" class="btn" disabled>📥 휴대폰에 저장</button>
+    <button id="copyB64" class="btn" disabled>📋 Base64 복사</button>
+    <button id="copyDataUrl" class="btn" disabled>🔗 data URL 복사</button>
+    <button id="openDataUrl" class="btn" disabled>🌐 새 탭 열기</button>
+    <span id="spin" style="display:none">⏳ 생성 중…</span>
+  </div>
+
+  <div id="viewer"><div style="color:#888">아직 결과 없음</div></div>
+
+  <label>Base64 원문</label>
+  <textarea id="b64" placeholder="여기에 base64가 표시됩니다" readonly></textarea>
+
+  <label>원시 응답(raw) — 안전 피드백 포함</label>
+  <textarea id="raw" placeholder="j.raw 전체가 표시됩니다" readonly></textarea>
+
+  <div id="msg"></div>
+
+<script>
+/* ===== 사용자 설정 (초기값) ===== */
+const DEFAULTS = {
+  ENDPOINT: "https://<여기에-Cloud-Run-URL>", // ← 배포 URL로 교체
+  BEARER_TOKEN: "" // 서버가 Authorization: Bearer 검증하면 넣으세요
+};
+/* ================================= */
+
+let last = { base64:null, mime:"image/png" };
+
+function setBusy(b){
+  document.getElementById('spin').style.display=b?'inline':'none';
+  document.getElementById('go').disabled=b;
+}
+function setMsg(t, err){
+  const m=document.getElementById('msg');
+  m.textContent=t||''; m.style.color = err ? '#c00' : '#666';
+}
+function showImage(b64, mime){
+  const v = document.getElementById('viewer');
+  v.innerHTML = '';
+  const img = new Image();
+  img.src = `data:${mime};base64,${b64}`;
+  img.onload = ()=> v.appendChild(img);
+}
+function base64FromFile(file){
+  return new Promise((resolve,reject)=>{
+    const fr = new FileReader();
+    fr.onload = () => {
+      const res = fr.result; // data:<mime>;base64,XXXX
+      const m = String(res).match(/^data:(.+);base64,(.*)$/);
+      if (!m) return reject(new Error("Base64 parse failed"));
+      resolve({ mime: m[1], base64: m[2] });
+    };
+    fr.onerror = () => reject(fr.error || new Error("FileReader error"));
+    fr.readAsDataURL(file);
+  });
+}
+function enableActions(on){
+  ['save','copyB64','copyDataUrl','openDataUrl'].forEach(id=>{
+    const el = document.getElementById(id);
+    if (el) el.disabled = !on;
+  });
+}
+function download(b64,mime){
+  const bin = atob(b64), len = bin.length, bytes = new Uint8Array(len);
+  for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g,'-');
+  const ext = mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png');
+  a.href=url; a.download=`gemini-${ts}.${ext}`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 30000);
+  // iOS 보완: 새 탭 열어 길게 눌러 저장
+  setTimeout(()=>{
+    const url2 = URL.createObjectURL(blob);
+    window.open(url2, '_blank');
+    setTimeout(()=>URL.revokeObjectURL(url2), 30000);
+  }, 400);
+}
+
+document.getElementById('endpoint').value = DEFAULTS.ENDPOINT;
+document.getElementById('token').value = DEFAULTS.BEARER_TOKEN;
+
+document.getElementById('file').onchange = (e)=>{
+  const f = e.target.files?.[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  const th = document.getElementById('thumb');
+  th.src = url; th.style.display = 'inline';
+};
+
+document.getElementById('go').onclick = async () => {
+  setMsg('');
+  enableActions(false);
+
+  const ENDPOINT = document.getElementById('endpoint').value.trim();
+  const BEARER = document.getElementById('token').value.trim();
+  if (!/^https?:\/\//i.test(ENDPOINT)) return setMsg('엔드포인트 URL을 먼저 입력하세요.', true);
+
+  const f = document.getElementById('file').files?.[0];
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return setMsg('프롬프트를 입력하세요.', true);
+
+  setBusy(true);
+  try {
+    let image = undefined;
+    if (f) image = await base64FromFile(f);
+
+    const headers = {'Content-Type':'application/json'};
+    if (BEARER) headers['Authorization'] = 'Bearer ' + BEARER;
+
+    const res = await fetch(ENDPOINT, {
+      method:'POST',
+      headers,
+      body: JSON.stringify({ prompt, image })
+    });
+
+    const j = await res.json();
+
+    // 안전 피드백 등 raw 전체 표시
+    document.getElementById('raw').value = j.raw ? JSON.stringify(j.raw, null, 2) : '';
+
+    if (j.image_base64) {
+      last = { base64: j.image_base64, mime: j.mime_type || 'image/png' };
+      document.getElementById('b64').value = last.base64;
+      showImage(last.base64, last.mime);
+      enableActions(true);
+      setMsg('완료! 저장/복사 버튼을 사용하세요.');
+    } else {
+      document.getElementById('b64').value = '';
+      setMsg('이미지가 오지 않았습니다.' + (j.error ? `\n에러: ${j.error}` : ''), true);
+    }
+  } catch (e) {
+    setMsg(`통신 오류: ${e.message}`, true);
+  } finally {
+    setBusy(false);
+  }
+};
+
+document.getElementById('save').onclick = ()=>{
+  if (!last.base64) return;
+  download(last.base64, last.mime);
+};
+document.getElementById('copyB64').onclick = async ()=>{
+  if (!last.base64) return;
+  await navigator.clipboard.writeText(last.base64).catch(()=>{});
+  setMsg('Base64를 복사했습니다.');
+};
+document.getElementById('copyDataUrl').onclick = async ()=>{
+  if (!last.base64) return;
+  const url = `data:${last.mime};base64,${last.base64}`;
+  await navigator.clipboard.writeText(url).catch(()=>{});
+  setMsg('data URL을 복사했습니다.');
+};
+document.getElementById('openDataUrl').onclick = ()=>{
+  if (!last.base64) return;
+  const url = `data:${last.mime};base64,${last.base64}`;
+  const w = window.open(url, '_blank');
+  if (!w) setMsg('팝업이 차단되었을 수 있어요. 브라우저 팝업 허용을 켜주세요.', true);
+};
+</script>
+</body>
+</html>
