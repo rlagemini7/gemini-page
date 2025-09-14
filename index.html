@@ -1,12 +1,12 @@
+<!-- index.html -->
 <!doctype html>
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기</title>
+<title>Gemini 이미지 생성기 (안전 수준 선택 가능)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; }
   body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
-  h2{margin:.2rem 0 1rem}
   .row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
   .btn, select, input[type="text"]{padding:.6rem .9rem;border:1px solid var(--b);border-radius:10px;background:#fff;color:#000}
   .btn{cursor:pointer}
@@ -21,13 +21,12 @@
   legend{padding:0 6px;color:#333}
   label.slab{display:flex;gap:8px;align-items:center;min-width:260px;justify-content:space-between}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}
-  .err{color:#c00}
 </style>
 <body>
   <h2>Gemini 이미지 생성기</h2>
 
   <div class="row">
-    <input id="endpoint" type="text" placeholder="https://gemini-image-198457492759.asia-northeast3.run.app" style="flex:2;min-width:260px">
+    <input id="endpoint" type="text" placeholder="https://<Cloud-Run-URL>" style="flex:2;min-width:260px">
     <input id="token" type="text" placeholder="(선택) Bearer 토큰" style="flex:1;min-width:200px">
   </div>
 
@@ -59,16 +58,16 @@
       </label>
     </div>
     <div style="margin-top:.5rem;color:#666;font-size:.9rem">
-      기본값: OFF. “기본(모델 기본값)”을 고르면 해당 항목은 요청에서 제외됩니다.
+      기본값: OFF. 모델 기본값 사용하려면 “기본(모델 기본값)” 선택하세요.
     </div>
   </fieldset>
 
   <div class="row">
-    <button id="go" class="btn">🎨 이미지 만들기</button>
-    <button id="save" class="btn" disabled>📥 휴대폰에 저장</button>
-    <button id="copyB64" class="btn" disabled>📋 Base64 복사</button>
-    <button id="copyDataUrl" class="btn" disabled>🔗 data URL 복사</button>
-    <button id="openDataUrl" class="btn" disabled>🌐 새 탭 열기</button>
+    <button id="go" class="btn">이미지 만들기</button>
+    <button id="save" class="btn" disabled>휴대폰에 저장</button>
+    <button id="copyB64" class="btn" disabled>Base64 복사</button>
+    <button id="copyDataUrl" class="btn" disabled>data URL 복사</button>
+    <button id="openDataUrl" class="btn" disabled>새 탭 열기</button>
     <span id="spin" style="display:none">⏳ 생성 중…</span>
   </div>
 
@@ -84,7 +83,6 @@
 
 <script>
 (function(){
-  // ===== 안전한 요소 참조 =====
   const $ = id => document.getElementById(id);
   const refs = {
     endpoint: $('endpoint'),
@@ -103,90 +101,72 @@
     raw: $('raw'),
     msg: $('msg'),
     s: {
-      HARASSMENT: $('s-HARASSMENT'),
-      HATE_SPEECH: $('s-HATE_SPEECH'),
-      SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'),
-      DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
-      CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY'),
+      HARASSMENT:$('s-HARASSMENT'),
+      HATE_SPEECH:$('s-HATE_SPEECH'),
+      SEXUALLY_EXPLICIT:$('s-SEXUALLY_EXPLICIT'),
+      DANGEROUS_CONTENT:$('s-DANGEROUS_CONTENT'),
+      CIVIC_INTEGRITY:$('s-CIVIC_INTEGRITY'),
     }
   };
 
-  // ===== 초기값(원하면 바꿔두세요) =====
-  const DEFAULTS = {
-    ENDPOINT: "https://gemini-image-198457492759.asia-northeast3.run.app",
-    BEARER_TOKEN: ""
-  };
+  const DEFAULTS = { ENDPOINT:"https://<Cloud-Run-URL>", BEARER_TOKEN:"" };
   refs.endpoint.value = DEFAULTS.ENDPOINT;
   refs.token.value = DEFAULTS.BEARER_TOKEN;
 
-  // ===== Safety 드롭다운 채우기 =====
   const SAFETY_OPTIONS = [
     ["", "기본(모델 기본값)"],
-    ["OFF", "OFF (권장/기본)"],
+    ["OFF", "OFF"],
     ["BLOCK_ONLY_HIGH", "Block only HIGH"],
-    ["BLOCK_MEDIUM_AND_ABOVE", "Block MEDIUM+"],
-    ["BLOCK_LOW_AND_ABOVE", "Block LOW+"],
+    ["BLOCK_MEDIUM_AND_ABOVE", "Block MEDIUM & ABOVE"],
+    ["BLOCK_LOW_AND_ABOVE", "Block LOW & ABOVE"],
     ["HARM_BLOCK_THRESHOLD_UNSPECIFIED", "Unspecified"]
   ];
   const CATS = Object.keys(refs.s);
   function fillSelect(sel){
     sel.innerHTML = SAFETY_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
-    sel.value = "OFF"; // 기본 OFF
+    sel.value = "OFF";
   }
   CATS.forEach(cat => fillSelect(refs.s[cat]));
 
-  // ===== 유틸 =====
-  function setBusy(b){
-    refs.spin.style.display = b ? 'inline' : 'none';
-    refs.go.disabled = b;
-  }
-  function setMsg(text, isErr){
-    refs.msg.textContent = text || '';
-    refs.msg.classList.toggle('err', !!isErr);
-    refs.msg.style.color = isErr ? '#c00' : '#666';
-  }
-  function showImage(b64, mime){
-    refs.viewer.innerHTML = '';
-    const img = new Image();
-    img.src = `data:${mime};base64,${b64}`;
-    img.onload = () => refs.viewer.appendChild(img);
-  }
+  let last = { base64:null, mime:"image/png" };
+
+  function setBusy(b){ refs.spin.style.display = b ? 'inline':'none'; refs.go.disabled = b; }
+  function setMsg(t,isErr){ refs.msg.textContent = t||''; refs.msg.style.color = isErr ? '#c00':'#666'; }
+  function showImage(b64,mime){ refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime};base64,${b64}`; img.onload=()=>refs.viewer.appendChild(img); }
   function base64FromFile(file){
     return new Promise((resolve,reject)=>{
-      const fr = new FileReader();
-      fr.onload = () => {
+      const fr=new FileReader();
+      fr.onload = ()=> {
         const m = String(fr.result).match(/^data:(.+);base64,(.*)$/);
         if (!m) return reject(new Error("Base64 parse failed"));
         resolve({ mime: m[1], base64: m[2] });
       };
-      fr.onerror = () => reject(fr.error || new Error("FileReader error"));
+      fr.onerror = ()=> reject(fr.error || new Error("FileReader error"));
       fr.readAsDataURL(file);
     });
   }
   function enableActions(on){
-    [refs.save, refs.copyB64, refs.copyDataUrl, refs.openDataUrl].forEach(el => el.disabled = !on);
+    [refs.save,refs.copyB64,refs.copyDataUrl,refs.openDataUrl].forEach(el=> el.disabled = !on);
   }
   function download(b64,mime){
-    const bin = atob(b64), bytes = new Uint8Array(bin.length);
-    for (let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-    const blob = new Blob([bytes],{type:mime});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const ts = new Date().toISOString().replace(/[:.]/g,'-');
-    const ext = mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png');
-    a.href = url; a.download = `gemini-${ts}.${ext}`;
+    const bin=atob(b64), bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i];
+    const blob=new Blob([bytes],{type:mime});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    const ts=new Date().toISOString().replace(/[:.]/g,'-');
+    const ext=mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png');
+    a.href=url; a.download=`gemini-${ts}.${ext}`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),30000);
-    // iOS 보완
     setTimeout(()=>{
-      const url2 = URL.createObjectURL(blob);
-      window.open(url2, '_blank');
+      const url2=URL.createObjectURL(blob);
+      window.open(url2,'_blank');
       setTimeout(()=>URL.revokeObjectURL(url2),30000);
     },400);
   }
 
-  // ===== 이벤트 =====
-  refs.file.addEventListener('change', (e)=>{
+  refs.file.addEventListener('change', (e)=> {
     const f = e.target.files?.[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
@@ -195,11 +175,10 @@
   });
 
   refs.go.addEventListener('click', async ()=>{
-    try{
+    try {
       setMsg(''); enableActions(false);
-
-      const ENDPOINT = refs.endpoint.value.trim();
-      if (!/^https?:\/\//i.test(ENDPOINT)) { setMsg('엔드포인트 URL을 입력하세요.', true); return; }
+      const ep = refs.endpoint.value.trim();
+      if (!/^https?:\/\//i.test(ep)) { setMsg('엔드포인트 URL을 입력하세요.', true); return; }
       const prompt = refs.prompt.value.trim();
       if (!prompt) { setMsg('프롬프트를 입력하세요.', true); return; }
 
@@ -208,24 +187,19 @@
       let image;
       if (refs.file.files?.[0]) image = await base64FromFile(refs.file.files[0]);
 
-      // safety: ""는 제외
       const safety = {};
       CATS.forEach(cat => {
         const v = refs.s[cat].value;
         if (v) safety[cat] = v;
       });
-      if (Object.keys(safety).length === 0) undefined; // 모두 기본이면 안 보냄
+      if (Object.keys(safety).length === 0) undefined;
 
-      const headers = { 'Content-Type': 'application/json' };
+      const headers = {'Content-Type':'application/json'};
       const tok = refs.token.value.trim();
       if (tok) headers['Authorization'] = 'Bearer ' + tok;
 
-      const body = JSON.stringify({ prompt, image, safety: (Object.keys(safety).length? safety: undefined) });
-
-      const res = await fetch(ENDPOINT, { method:'POST', headers, body });
-      let j;
-      try { j = await res.json(); }
-      catch { setMsg('서버 응답 파싱 실패', true); return; }
+      const resp = await fetch(ep, { method:'POST', headers, body: JSON.stringify({ prompt, image, safety }) });
+      const j = await resp.json();
 
       refs.raw.value = j.raw ? JSON.stringify(j.raw, null, 2) : '';
 
@@ -238,21 +212,20 @@
         refs.b64.value = '';
         setMsg('이미지가 오지 않았습니다.' + (j.error ? `\n에러: ${j.error}` : ''), true);
       }
-    } catch(err){
-      setMsg(`오류: ${err.message}`, true);
+    } catch(err) {
+      setMsg('오류: ' + err.message, true);
     } finally {
       setBusy(false);
     }
   });
 
   refs.save.addEventListener('click', ()=>{ if (refs.b64.value) download(refs.b64.value, 'image/png'); });
-  refs.copyB64.addEventListener('click', async ()=>{ if (!refs.b64.value) return; await navigator.clipboard.writeText(refs.b64.value).catch(()=>{}); setMsg('Base64를 복사했습니다.'); });
-  refs.copyDataUrl.addEventListener('click', async ()=>{ if (!refs.b64.value) return; const url=`data:image/png;base64,${refs.b64.value}`; await navigator.clipboard.writeText(url).catch(()=>{}); setMsg('data URL을 복사했습니다.'); });
-  refs.openDataUrl.addEventListener('click', ()=>{ if (!refs.b64.value) return; const url=`data:image/png;base64,${refs.b64.value}`; const w=window.open(url,'_blank'); if(!w) setMsg('팝업이 차단되었을 수 있어요. 브라우저 팝업 허용을 켜주세요.', true); });
-
-  // ===== 간단 자가 진단(초기 에러 잡기) =====
-  window.addEventListener('error', e => setMsg('스크립트 에러: ' + e.message, true));
-  window.addEventListener('unhandledrejection', e => setMsg('비동기 에러: ' + (e.reason?.message || e.reason), true));
+  refs.copyB64.addEventListener('click', async ()=>{ if (!refs.b64.value) return; await navigator.clipboard.writeText(refs.b64.value).catch(()=>{}); setMsg('Base64 복사했습니다.'); });
+  refs.copyDataUrl.addEventListener('click', async ()=>{ if (!refs.b64.value) return; const url=`data:${refs.b64.value ? refs.mime : 'image/png'};base64,${refs.b64.value}`; await navigator.clipboard.writeText(url).catch(()=>{}); setMsg('data URL 복사했습니다.'); });
+  refs.openDataUrl.addEventListener('click', ()=>{ if (!refs.b64.value) return; const url=`data:${refs.mime};base64,${refs.b64.value}`; const w=window.open(url,'_blank'); if (!w) setMsg('팝업이 차단되었을 수 있어요.', true); });
+  } catch(e){
+    setMsg('스크립트 오류: ' + e.message, true);
+  }
 })();
 </script>
 </body>
