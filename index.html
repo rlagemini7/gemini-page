@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안전 설정 + 비용절감 + Gen-Z 확장 + 하이픈 감싸기)</title>
+<title>Gemini 이미지 생성기 (안전 설정 + 비용절감 + Gen-Z 확장 + 하이픈 래핑)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; }
   body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
@@ -42,8 +42,8 @@
   <label for="prompt">프롬프트</label>
   <textarea id="prompt">(선택) 참고 이미지를 바탕으로 같은 캐릭터의 다른 포즈를 SD풍 만화 스타일로. 1:1.</textarea>
 
-  <!-- Gen-Z 치환 버튼 -->
-  <div class="row" aria-label="Gen-Z prompt tools (replace)">
+  <!-- Gen-Z 모드 버튼 -->
+  <div class="row" aria-label="Gen-Z prompt tools">
     <button id="genz-e" class="btn" title="모든 소문자 e → 3">Gen-Z: e→3</button>
     <button id="genz-g" class="btn" title="모든 소문자 g → 8">Gen-Z: g→8</button>
     <button id="genz-l" class="btn" title="모든 소문자 l → 1">Gen-Z: l→1</button>
@@ -54,15 +54,14 @@
     <span class="hint">※ 소문자만 변환합니다 (e/g/l/s/o/a).</span>
   </div>
 
-  <!-- 하이픈 감싸기 버튼 -->
+  <!-- 하이픈 래핑 버튼 -->
   <div class="row" aria-label="Hyphen wrap tools">
-    <button id="wrap-e" class="btn" title="소문자 e를 -e-로">Wrap: e → -e-</button>
-    <button id="wrap-g" class="btn" title="소문자 g를 -g-로">Wrap: g → -g-</button>
-    <button id="wrap-l" class="btn" title="소문자 l를 -l-로">Wrap: l → -l-</button>
-    <button id="wrap-s" class="btn" title="소문자 s를 -s-로">Wrap: s → -s-</button>
-    <button id="wrap-o" class="btn" title="소문자 o를 -o-로">Wrap: o → -o-</button>
-    <button id="wrap-a" class="btn" title="소문자 a를 -a-로">Wrap: a → -a-</button>
-    <span class="hint">※ 여러 번 누르면 중첩으로 감싸집니다.</span>
+    <button id="wrap-e" class="btn" title="소문자 e 앞뒤로 - 붙이기">Wrap: e → -e-</button>
+    <button id="wrap-g" class="btn" title="소문자 g 앞뒤로 - 붙이기">Wrap: g → -g-</button>
+    <button id="wrap-l" class="btn" title="소문자 l 앞뒤로 - 붙이기">Wrap: l → -l-</button>
+    <button id="wrap-s" class="btn" title="소문자 s 앞뒤로 - 붙이기">Wrap: s → -s-</button>
+    <button id="wrap-o" class="btn" title="소문자 o 앞뒤로 - 붙이기">Wrap: o → -o-</button>
+    <button id="wrap-a" class="btn" title="소문자 a 앞뒤로 - 붙이기">Wrap: a → -a-</button>
   </div>
 
   <fieldset>
@@ -94,7 +93,6 @@
     <button id="save" class="btn" disabled>휴대폰에 저장</button>
     <button id="copyB64" class="btn" disabled>Base64 복사</button>
     <button id="copyDataUrl" class="btn" disabled>data URL 복사</button>
-    <button id="openDataUrl" class="btn" disabled>새 탭 열기</button>
     <span id="spin" style="display:none">⏳ 생성 중…</span>
   </div>
 
@@ -122,7 +120,6 @@
     save: $('save'),
     copyB64: $('copyB64'),
     copyDataUrl: $('copyDataUrl'),
-    openDataUrl: $('openDataUrl'),
     spin: $('spin'),
     viewer: $('viewer'),
     b64: $('b64'),
@@ -168,7 +165,7 @@
 
   let last = { base64:null, mime:"image/png" };
 
-  // ===== Gen-Z / Wrap 공통: 원본 저장/복원 =====
+  // ===== Gen-Z 모드 & 래핑 공통 =====
   let genzOriginal = null; // 첫 변형 직전의 원본 프롬프트
   function ensureOriginalSaved(){
     if (genzOriginal === null) genzOriginal = refs.prompt.value;
@@ -178,33 +175,31 @@
     refs.prompt.value = mapper(refs.prompt.value);
   }
 
-  // ===== Gen-Z 치환 =====
+  // Gen-Z: 소문자만 치환
   refs.genz.e.addEventListener('click', ()=> applyTransform(s => s.replace(/e/g,'3')));
   refs.genz.g.addEventListener('click', ()=> applyTransform(s => s.replace(/g/g,'8')));
   refs.genz.l.addEventListener('click', ()=> applyTransform(s => s.replace(/l/g,'1')));
   refs.genz.s.addEventListener('click', ()=> applyTransform(s => s.replace(/s/g,'5')));
   refs.genz.o.addEventListener('click', ()=> applyTransform(s => s.replace(/o/g,'0')));
   refs.genz.a.addEventListener('click', ()=> applyTransform(s => s.replace(/a/g,'4')));
-
   refs.genz.reset.addEventListener('click', ()=>{
     if (genzOriginal !== null) {
       refs.prompt.value = genzOriginal;
-      genzOriginal = null; // 다음 변형부터 새 원본을 저장
+      genzOriginal = null;
     }
   });
 
-  // ===== 하이픈 감싸기 =====
-  function wrapLetter(letter){
-    // 모든 소문자 letter를 -letter- 로
-    const re = new RegExp(letter, 'g'); // 소문자만
-    applyTransform(s => s.replace(re, `-${letter}-`));
+  // 하이픈 래핑: 소문자만 -x- 로
+  function wrapChar(c){  // 단순 래핑(중복 래핑 허용)
+    const re = new RegExp(c, 'g');
+    return s => s.replace(re, `-${c}-`);
   }
-  refs.wrap.e.addEventListener('click', ()=> wrapLetter('e'));
-  refs.wrap.g.addEventListener('click', ()=> wrapLetter('g'));
-  refs.wrap.l.addEventListener('click', ()=> wrapLetter('l'));
-  refs.wrap.s.addEventListener('click', ()=> wrapLetter('s'));
-  refs.wrap.o.addEventListener('click', ()=> wrapLetter('o'));
-  refs.wrap.a.addEventListener('click', ()=> wrapLetter('a'));
+  refs.wrap.e.addEventListener('click', ()=> applyTransform(wrapChar('e')));
+  refs.wrap.g.addEventListener('click', ()=> applyTransform(wrapChar('g')));
+  refs.wrap.l.addEventListener('click', ()=> applyTransform(wrapChar('l')));
+  refs.wrap.s.addEventListener('click', ()=> applyTransform(wrapChar('s')));
+  refs.wrap.o.addEventListener('click', ()=> applyTransform(wrapChar('o')));
+  refs.wrap.a.addEventListener('click', ()=> applyTransform(wrapChar('a')));
 
   // ===== 공통 유틸 =====
   function setBusy(b){ refs.spin.style.display = b ? 'inline':'none'; refs.go.disabled = b; }
@@ -253,7 +248,7 @@
       URL.revokeObjectURL(imgURL);
     }
   }
-  function enableActions(on){ [refs.save,refs.copyB64,refs.copyDataUrl,refs.openDataUrl].forEach(el=> el.disabled = !on); }
+  function enableActions(on){ [refs.save,refs.copyB64,refs.copyDataUrl].forEach(el=> el.disabled = !on); }
   function download(b64,mime){
     const bin=atob(b64), bytes=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
@@ -265,11 +260,6 @@
     a.href=url; a.download=`gemini-${ts}.${ext}`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),30000);
-    setTimeout(()=>{
-      const url2=URL.createObjectURL(blob);
-      window.open(url2,'_blank');
-      setTimeout(()=>URL.revokeObjectURL(url2),30000);
-    },400);
   }
 
   // ===== 이벤트 =====
@@ -336,7 +326,6 @@
   refs.save.addEventListener('click', ()=>{ if (last.base64) download(last.base64, last.mime); });
   refs.copyB64.addEventListener('click', async ()=>{ if (!last.base64) return; await navigator.clipboard.writeText(last.base64).catch(()=>{}); setMsg('Base64 복사했습니다.'); });
   refs.copyDataUrl.addEventListener('click', async ()=>{ if (!last.base64) return; const url=`data:${last.mime};base64,${last.base64}`; await navigator.clipboard.writeText(url).catch(()=>{}); setMsg('data URL 복사했습니다.'); });
-  refs.openDataUrl.addEventListener('click', ()=>{ if (!last.base64) return; const url=`data:${last.mime};base64,${last.base64}`; const w=window.open(url,'_blank'); if (!w) setMsg('팝업이 차단되었을 수 있어요.', true); });
 
   window.addEventListener('error', e => setMsg('스크립트 에러: ' + e.message, true));
   window.addEventListener('unhandledrejection', e => setMsg('비동기 에러: ' + (e.reason?.message || e.reason), true));
