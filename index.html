@@ -2,17 +2,17 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (Gen-Z 모드 포함)</title>
+<title>Gemini 이미지 생성기 (안전 설정 + 비용절감 + Gen-Z 확장)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; }
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
+  body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
   .row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
-  .btn,select,input[type="text"]{padding:.6rem .9rem;border:1px solid var(--b);border-radius:10px;background:#fff;color:#000}
+  .btn, select, input[type="text"]{padding:.6rem .9rem;border:1px solid var(--b);border-radius:10px;background:#fff;color:#000}
   .btn{cursor:pointer}
   .btn[disabled]{opacity:.5;cursor:default}
   #viewer{border:1px solid var(--b);border-radius:10px;min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden}
   #viewer img{max-width:100%;max-height:70vh}
-  textarea{width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  textarea{width:100%;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
   #prompt{min-height:110px} #b64{min-height:140px} #raw{min-height:220px}
   #msg{white-space:pre-wrap;color:var(--muted)}
   .thumb{max-height:120px;border:1px solid var(--b);border-radius:8px}
@@ -41,8 +41,17 @@
 
   <label for="prompt">프롬프트</label>
   <textarea id="prompt">(선택) 참고 이미지를 바탕으로 같은 캐릭터의 다른 포즈를 SD풍 만화 스타일로. 1:1.</textarea>
-  <div class="row">
-    <button id="genz" class="btn" type="button">Gen-Z 변환 (e→3, g→8)</button>
+
+  <!-- Gen-Z 모드 버튼 -->
+  <div class="row" aria-label="Gen-Z prompt tools">
+    <button id="genz-e" class="btn" title="모든 소문자 e → 3">Gen-Z: e→3</button>
+    <button id="genz-g" class="btn" title="모든 소문자 g → 8">Gen-Z: g→8</button>
+    <button id="genz-l" class="btn" title="모든 소문자 l → 1">Gen-Z: l→1</button>
+    <button id="genz-s" class="btn" title="모든 소문자 s → 5">Gen-Z: s→5</button>
+    <button id="genz-o" class="btn" title="모든 소문자 o → 0">Gen-Z: o→0</button>
+    <button id="genz-a" class="btn" title="모든 소문자 a → 4">Gen-Z: a→4</button>
+    <button id="genz-reset" class="btn" title="Gen-Z 적용 전 상태로">Gen-Z: 처음으로</button>
+    <span class="hint">※ 소문자만 변환합니다 (e/g/l/s/o/a).</span>
   </div>
 
   <fieldset>
@@ -92,57 +101,220 @@
 (function(){
   const $ = id => document.getElementById(id);
   const refs = {
-    endpoint:$('endpoint'),token:$('token'),file:$('file'),
-    thumb:$('thumb'),shrink:$('shrink'),prompt:$('prompt'),
-    genz:$('genz'),go:$('go'),save:$('save'),
-    copyB64:$('copyB64'),copyDataUrl:$('copyDataUrl'),
-    openDataUrl:$('openDataUrl'),spin:$('spin'),
-    viewer:$('viewer'),b64:$('b64'),raw:$('raw'),msg:$('msg'),
-    s:{
-      HARASSMENT:$('s-HARASSMENT'),
-      HATE_SPEECH:$('s-HATE_SPEECH'),
-      SEXUALLY_EXPLICIT:$('s-SEXUALLY_EXPLICIT'),
-      DANGEROUS_CONTENT:$('s-DANGEROUS_CONTENT'),
-      CIVIC_INTEGRITY:$('s-CIVIC_INTEGRITY'),
+    endpoint: $('endpoint'),
+    token: $('token'),
+    file: $('file'),
+    thumb: $('thumb'),
+    shrink: $('shrink'),
+    prompt: $('prompt'),
+    go: $('go'),
+    save: $('save'),
+    copyB64: $('copyB64'),
+    copyDataUrl: $('copyDataUrl'),
+    openDataUrl: $('openDataUrl'),
+    spin: $('spin'),
+    viewer: $('viewer'),
+    b64: $('b64'),
+    raw: $('raw'),
+    msg: $('msg'),
+    s: {
+      HARASSMENT: $('s-HARASSMENT'),
+      HATE_SPEECH: $('s-HATE_SPEECH'),
+      SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'),
+      DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
+      CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY'),
+    },
+    genz: {
+      e: $('genz-e'),
+      g: $('genz-g'),
+      l: $('genz-l'),
+      s: $('genz-s'),
+      o: $('genz-o'),
+      a: $('genz-a'),
+      reset: $('genz-reset')
     }
   };
 
-  const SAFETY_OPTIONS=[
-    ["","기본(모델 기본값)"],
-    ["OFF","OFF"],
-    ["BLOCK_ONLY_HIGH","Block only HIGH"],
-    ["BLOCK_MEDIUM_AND_ABOVE","Block MEDIUM & ABOVE"],
-    ["BLOCK_LOW_AND_ABOVE","Block LOW & ABOVE"],
-    ["HARM_BLOCK_THRESHOLD_UNSPECIFIED","Unspecified"]
+  const DEFAULTS = { ENDPOINT:"https://<Cloud-Run-URL>", BEARER_TOKEN:"" };
+  refs.endpoint.value = DEFAULTS.ENDPOINT;
+  refs.token.value = DEFAULTS.BEARER_TOKEN;
+
+  // Safety 옵션
+  const SAFETY_OPTIONS = [
+    ["", "기본(모델 기본값)"],
+    ["OFF", "OFF"],
+    ["BLOCK_ONLY_HIGH", "Block only HIGH"],
+    ["BLOCK_MEDIUM_AND_ABOVE", "Block MEDIUM & ABOVE"],
+    ["BLOCK_LOW_AND_ABOVE", "Block LOW & ABOVE"],
+    ["HARM_BLOCK_THRESHOLD_UNSPECIFIED", "Unspecified"]
   ];
-  const CATS=Object.keys(refs.s);
-  function fillSelect(sel){sel.innerHTML=SAFETY_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join(''); sel.value="OFF";}
-  CATS.forEach(cat=>fillSelect(refs.s[cat]));
+  const CATS = Object.keys(refs.s);
+  function fillSelect(sel){
+    sel.innerHTML = SAFETY_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+    sel.value = "OFF";
+  }
+  CATS.forEach(cat => fillSelect(refs.s[cat]));
 
-  let last={base64:null,mime:"image/png"};
+  let last = { base64:null, mime:"image/png" };
 
-  function setBusy(b){refs.spin.style.display=b?'inline':'none';refs.go.disabled=b;}
-  function setMsg(t,isErr){refs.msg.textContent=t||'';refs.msg.style.color=isErr?'#c00':'#666';}
-  function showImage(b64,mime){refs.viewer.innerHTML='';const img=new Image();img.src=`data:${mime};base64,${b64}`;img.onload=()=>refs.viewer.appendChild(img);}
-  function base64FromFile(file){return new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>{const m=String(fr.result).match(/^data:(.+);base64,(.*)$/);if(!m)return reject(new Error("Base64 parse failed"));resolve({mime:m[1],base64:m[2]});};fr.onerror=()=>reject(fr.error||new Error("FileReader error"));fr.readAsDataURL(file);});}
-  async function base64FromFileResized(file,maxEdge=512){const imgURL=URL.createObjectURL(file);try{const img=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=()=>rej(new Error("이미지 로드 실패"));im.src=imgURL;});const w=img.naturalWidth||img.width;const h=img.naturalHeight||img.height;const scale=Math.min(1,maxEdge/Math.max(w,h));const outW=Math.round(w*scale),outH=Math.round(h*scale);const canvas=document.createElement('canvas');canvas.width=outW;canvas.height=outH;const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,outW,outH);const origType=file.type||'image/jpeg';const usePng=origType.includes('png');const mime=usePng?'image/png':'image/jpeg';const quality=usePng?undefined:0.9;const dataUrl=canvas.toDataURL(mime,quality);const m=dataUrl.match(/^data:(.+);base64,(.*)$/);if(!m)throw new Error("캔버스 인코딩 실패");return{mime:m[1],base64:m[2],width:outW,height:outH};}finally{URL.revokeObjectURL(imgURL);}}
-  function enableActions(on){[refs.save,refs.copyB64,refs.copyDataUrl,refs.openDataUrl].forEach(el=>el.disabled=!on);}
-  function download(b64,mime){const bin=atob(b64),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);const blob=new Blob([bytes],{type:mime});const url=URL.createObjectURL(blob);const a=document.createElement('a');const ts=new Date().toISOString().replace(/[:.]/g,'-');const ext=mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png');a.href=url;a.download=`gemini-${ts}.${ext}`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);setTimeout(()=>{const url2=URL.createObjectURL(blob);window.open(url2,'_blank');setTimeout(()=>URL.revokeObjectURL(url2),30000);},400);}
+  // ===== Gen-Z 모드 =====
+  let genzOriginal = null; // 첫 변환 직전의 원본 프롬프트 저장
+  function ensureOriginalSaved(){
+    if (genzOriginal === null) genzOriginal = refs.prompt.value;
+  }
+  function applyGenZ(mapper){
+    ensureOriginalSaved();
+    refs.prompt.value = mapper(refs.prompt.value);
+  }
+  // 소문자만 변환 (대문자는 유지)
+  refs.genz.e.addEventListener('click', ()=> applyGenZ(s => s.replace(/e/g,'3')));
+  refs.genz.g.addEventListener('click', ()=> applyGenZ(s => s.replace(/g/g,'8')));
+  refs.genz.l.addEventListener('click', ()=> applyGenZ(s => s.replace(/l/g,'1')));
+  refs.genz.s.addEventListener('click', ()=> applyGenZ(s => s.replace(/s/g,'5')));
+  refs.genz.o.addEventListener('click', ()=> applyGenZ(s => s.replace(/o/g,'0')));
+  refs.genz.a.addEventListener('click', ()=> applyGenZ(s => s.replace(/a/g,'4')));
+  refs.genz.reset.addEventListener('click', ()=>{
+    if (genzOriginal !== null) {
+      refs.prompt.value = genzOriginal;
+      genzOriginal = null; // 다시 변환하면 새 상태를 원본으로 재설정
+    }
+  });
 
-  refs.file.addEventListener('change',e=>{const f=e.target.files?.[0];if(!f)return;const url=URL.createObjectURL(f);refs.thumb.src=url;refs.thumb.style.display='inline';});
+  // ===== 공통 유틸 =====
+  function setBusy(b){ refs.spin.style.display = b ? 'inline':'none'; refs.go.disabled = b; }
+  function setMsg(t,isErr){ refs.msg.textContent = t||''; refs.msg.style.color = isErr ? '#c00':'#666'; }
+  function showImage(b64,mime){ refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime};base64,${b64}`; img.onload=()=>refs.viewer.appendChild(img); }
+  function base64FromFile(file){
+    return new Promise((resolve,reject)=>{
+      const fr=new FileReader();
+      fr.onload = ()=> {
+        const m = String(fr.result).match(/^data:(.+);base64,(.*)$/);
+        if (!m) return reject(new Error("Base64 parse failed"));
+        resolve({ mime: m[1], base64: m[2] });
+      };
+      fr.onerror = ()=> reject(fr.error || new Error("FileReader error"));
+      fr.readAsDataURL(file);
+    });
+  }
+  async function base64FromFileResized(file, maxEdge = 512) {
+    const imgURL = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((res, rej)=>{
+        const im = new Image();
+        im.onload = ()=> res(im);
+        im.onerror = ()=> rej(new Error("이미지 로드 실패"));
+        im.src = imgURL;
+      });
+      const w = img.naturalWidth || img.width;
+      const h = img.naturalHeight || img.height;
+      if (!w || !h) throw new Error("이미지 크기 확인 실패");
+      const scale = Math.min(1, maxEdge / Math.max(w, h));
+      const outW = Math.round(w * scale);
+      const outH = Math.round(h * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = outW; canvas.height = outH;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, outW, outH);
+      const origType = file.type || 'image/jpeg';
+      const usePng = origType.includes('png');
+      const mime = usePng ? 'image/png' : 'image/jpeg';
+      const quality = usePng ? undefined : 0.9;
+      const dataUrl = canvas.toDataURL(mime, quality);
+      const m = dataUrl.match(/^data:(.+);base64,(.*)$/);
+      if (!m) throw new Error("캔버스 인코딩 실패");
+      return { mime: m[1], base64: m[2], width: outW, height: outH };
+    } finally {
+      URL.revokeObjectURL(imgURL);
+    }
+  }
+  function enableActions(on){ [refs.save,refs.copyB64,refs.copyDataUrl,refs.openDataUrl].forEach(el=> el.disabled = !on); }
+  function download(b64,mime){
+    const bin=atob(b64), bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    const blob=new Blob([bytes],{type:mime});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    const ts=new Date().toISOString().replace(/[:.]/g,'-');
+    const ext=mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png');
+    a.href=url; a.download=`gemini-${ts}.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),30000);
+    setTimeout(()=>{
+      const url2=URL.createObjectURL(blob);
+      window.open(url2,'_blank');
+      setTimeout(()=>URL.revokeObjectURL(url2),30000);
+    },400);
+  }
 
-  refs.genz.addEventListener('click',()=>{const v=refs.prompt.value||'';const transformed=v.replace(/e/g,'3').replace(/g/g,'8');refs.prompt.value=transformed;setMsg('프롬프트를 Gen-Z 스타일로 변환했어요.');});
+  // ===== 이벤트 =====
+  refs.file.addEventListener('change', (e)=> {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    refs.thumb.src = url;
+    refs.thumb.style.display = 'inline';
+  });
 
-  refs.go.addEventListener('click',async()=>{try{setMsg('');enableActions(false);const ep=refs.endpoint.value.trim();if(!/^https?:\/\//i.test(ep)){setMsg('엔드포인트 URL을 입력하세요.',true);return;}const prompt=refs.prompt.value.trim();if(!prompt){setMsg('프롬프트를 입력하세요.',true);return;}setBusy(true);let image;if(refs.file.files?.[0]){if(refs.shrink.checked){const small=await base64FromFileResized(refs.file.files[0],512);image={mime:small.mime,base64:small.base64};setMsg(`업로드 이미지를 ${small.width}×${small.height}로 축소하여 전송합니다.`);}else{image=await base64FromFile(refs.file.files[0]);}}const safety={};CATS.forEach(cat=>{const v=refs.s[cat].value;if(v)safety[cat]=v;});const headers={'Content-Type':'application/json'};const tok=refs.token.value.trim();if(tok)headers['Authorization']='Bearer '+tok;const resp=await fetch(ep,{method:'POST',headers,body:JSON.stringify({prompt,image,safety:(Object.keys(safety).length?safety:undefined)})});const j=await resp.json();refs.raw.value=j.raw?JSON.stringify(j.raw,null,2):'';if(j.image_base64){last={base64:j.image_base64,mime:j.mime_type||'image/png'};refs.b64.value=last.base64;showImage(last.base64,last.mime);enableActions(true);setMsg('완료! 저장/복사 버튼을 사용하세요.');}else{refs.b64.value='';setMsg('이미지가 오지 않았습니다.'+(j.error?`\n에러: ${j.error}`:''),true);}}catch(err){setMsg('오류: '+err.message,true);console.error(err);}finally{setBusy(false);}});
+  refs.go.addEventListener('click', async ()=>{
+    try {
+      setMsg(''); enableActions(false);
+      const ep = refs.endpoint.value.trim();
+      if (!/^https?:\/\//i.test(ep)) { setMsg('엔드포인트 URL을 입력하세요.', true); return; }
+      const prompt = refs.prompt.value.trim();
+      if (!prompt) { setMsg('프롬프트를 입력하세요.', true); return; }
 
-  refs.save.addEventListener('click',()=>{if(last.base64)download(last.base64,last.mime);});
-  refs.copyB64.addEventListener('click',async()=>{if(!last.base64)return;await navigator.clipboard.writeText(last.base64).catch(()=>{});setMsg('Base64 복사했습니다.');});
-  refs.copyDataUrl.addEventListener('click',async()=>{if(!last.base64)return;const url=`data:${last.mime};base64,${last.base64}`;await navigator.clipboard.writeText(url).catch(()=>{});setMsg('data URL 복사했습니다.');});
-  refs.openDataUrl.addEventListener('click',()=>{if(!last.base64)return;const url=`data:${last.mime};base64,${last.base64}`;const w=window.open(url,'_blank');if(!w)setMsg('팝업이 차단되었을 수 있어요.',true);});
+      setBusy(true);
 
-  window.addEventListener('error',e=>setMsg('스크립트 에러: '+e.message,true));
-  window.addEventListener('unhandledrejection',e=>setMsg('비동기 에러: '+(e.reason?.message||e.reason),true));
+      let image;
+      if (refs.file.files?.[0]) {
+        if (refs.shrink.checked) {
+          const small = await base64FromFileResized(refs.file.files[0], 512);
+          image = { mime: small.mime, base64: small.base64 };
+          setMsg(`업로드 이미지를 ${small.width}×${small.height}로 축소하여 전송합니다.`, false);
+        } else {
+          image = await base64FromFile(refs.file.files[0]);
+        }
+      }
+
+      // safety
+      const safety = {};
+      Object.keys(refs.s).forEach(cat => { const v = refs.s[cat].value; if (v) safety[cat] = v; });
+
+      const headers = {'Content-Type':'application/json'};
+      const tok = refs.token.value.trim();
+      if (tok) headers['Authorization'] = 'Bearer ' + tok;
+
+      const resp = await fetch(ep, { method:'POST', headers, body: JSON.stringify({ prompt, image, safety: (Object.keys(safety).length? safety: undefined) }) });
+      const j = await resp.json();
+
+      refs.raw.value = j.raw ? JSON.stringify(j.raw, null, 2) : '';
+
+      if (j.image_base64) {
+        last = { base64: j.image_base64, mime: j.mime_type || 'image/png' };
+        refs.b64.value = last.base64;
+        showImage(last.base64, last.mime);
+        enableActions(true);
+        setMsg('완료! 저장/복사 버튼을 사용하세요.');
+      } else {
+        refs.b64.value = '';
+        setMsg('이미지가 오지 않았습니다.' + (j.error ? `\n에러: ${j.error}` : ''), true);
+      }
+    } catch(err) {
+      setMsg('오류: ' + err.message, true);
+      console.error(err);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  refs.save.addEventListener('click', ()=>{ if (last.base64) download(last.base64, last.mime); });
+  refs.copyB64.addEventListener('click', async ()=>{ if (!last.base64) return; await navigator.clipboard.writeText(last.base64).catch(()=>{}); setMsg('Base64 복사했습니다.'); });
+  refs.copyDataUrl.addEventListener('click', async ()=>{ if (!last.base64) return; const url=`data:${last.mime};base64,${last.base64}`; await navigator.clipboard.writeText(url).catch(()=>{}); setMsg('data URL 복사했습니다.'); });
+  refs.openDataUrl.addEventListener('click', ()=>{ if (!last.base64) return; const url=`data:${last.mime};base64,${last.base64}`; const w=window.open(url,'_blank'); if (!w) setMsg('팝업이 차단되었을 수 있어요.', true); });
+
+  window.addEventListener('error', e => setMsg('스크립트 에러: ' + e.message, true));
+  window.addEventListener('unhandledrejection', e => setMsg('비동기 에러: ' + (e.reason?.message || e.reason), true));
 })();
 </script>
 </body>
-</html> 
+</html>
