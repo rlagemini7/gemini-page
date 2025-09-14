@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안전 설정 + 비용절감 + Gen-Z 확장)</title>
+<title>Gemini 이미지 생성기 (안전 설정 + 비용절감 + Gen-Z 확장 + 하이픈 감싸기)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; }
   body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
@@ -42,8 +42,8 @@
   <label for="prompt">프롬프트</label>
   <textarea id="prompt">(선택) 참고 이미지를 바탕으로 같은 캐릭터의 다른 포즈를 SD풍 만화 스타일로. 1:1.</textarea>
 
-  <!-- Gen-Z 모드 버튼 -->
-  <div class="row" aria-label="Gen-Z prompt tools">
+  <!-- Gen-Z 치환 버튼 -->
+  <div class="row" aria-label="Gen-Z prompt tools (replace)">
     <button id="genz-e" class="btn" title="모든 소문자 e → 3">Gen-Z: e→3</button>
     <button id="genz-g" class="btn" title="모든 소문자 g → 8">Gen-Z: g→8</button>
     <button id="genz-l" class="btn" title="모든 소문자 l → 1">Gen-Z: l→1</button>
@@ -52,6 +52,17 @@
     <button id="genz-a" class="btn" title="모든 소문자 a → 4">Gen-Z: a→4</button>
     <button id="genz-reset" class="btn" title="Gen-Z 적용 전 상태로">Gen-Z: 처음으로</button>
     <span class="hint">※ 소문자만 변환합니다 (e/g/l/s/o/a).</span>
+  </div>
+
+  <!-- 하이픈 감싸기 버튼 -->
+  <div class="row" aria-label="Hyphen wrap tools">
+    <button id="wrap-e" class="btn" title="소문자 e를 -e-로">Wrap: e → -e-</button>
+    <button id="wrap-g" class="btn" title="소문자 g를 -g-로">Wrap: g → -g-</button>
+    <button id="wrap-l" class="btn" title="소문자 l를 -l-로">Wrap: l → -l-</button>
+    <button id="wrap-s" class="btn" title="소문자 s를 -s-로">Wrap: s → -s-</button>
+    <button id="wrap-o" class="btn" title="소문자 o를 -o-로">Wrap: o → -o-</button>
+    <button id="wrap-a" class="btn" title="소문자 a를 -a-로">Wrap: a → -a-</button>
+    <span class="hint">※ 여러 번 누르면 중첩으로 감싸집니다.</span>
   </div>
 
   <fieldset>
@@ -125,13 +136,13 @@
       CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY'),
     },
     genz: {
-      e: $('genz-e'),
-      g: $('genz-g'),
-      l: $('genz-l'),
-      s: $('genz-s'),
-      o: $('genz-o'),
-      a: $('genz-a'),
+      e: $('genz-e'), g: $('genz-g'), l: $('genz-l'),
+      s: $('genz-s'), o: $('genz-o'), a: $('genz-a'),
       reset: $('genz-reset')
+    },
+    wrap: {
+      e: $('wrap-e'), g: $('wrap-g'), l: $('wrap-l'),
+      s: $('wrap-s'), o: $('wrap-o'), a: $('wrap-a')
     }
   };
 
@@ -157,28 +168,43 @@
 
   let last = { base64:null, mime:"image/png" };
 
-  // ===== Gen-Z 모드 =====
-  let genzOriginal = null; // 첫 변환 직전의 원본 프롬프트 저장
+  // ===== Gen-Z / Wrap 공통: 원본 저장/복원 =====
+  let genzOriginal = null; // 첫 변형 직전의 원본 프롬프트
   function ensureOriginalSaved(){
     if (genzOriginal === null) genzOriginal = refs.prompt.value;
   }
-  function applyGenZ(mapper){
+  function applyTransform(mapper){
     ensureOriginalSaved();
     refs.prompt.value = mapper(refs.prompt.value);
   }
-  // 소문자만 변환 (대문자는 유지)
-  refs.genz.e.addEventListener('click', ()=> applyGenZ(s => s.replace(/e/g,'3')));
-  refs.genz.g.addEventListener('click', ()=> applyGenZ(s => s.replace(/g/g,'8')));
-  refs.genz.l.addEventListener('click', ()=> applyGenZ(s => s.replace(/l/g,'1')));
-  refs.genz.s.addEventListener('click', ()=> applyGenZ(s => s.replace(/s/g,'5')));
-  refs.genz.o.addEventListener('click', ()=> applyGenZ(s => s.replace(/o/g,'0')));
-  refs.genz.a.addEventListener('click', ()=> applyGenZ(s => s.replace(/a/g,'4')));
+
+  // ===== Gen-Z 치환 =====
+  refs.genz.e.addEventListener('click', ()=> applyTransform(s => s.replace(/e/g,'3')));
+  refs.genz.g.addEventListener('click', ()=> applyTransform(s => s.replace(/g/g,'8')));
+  refs.genz.l.addEventListener('click', ()=> applyTransform(s => s.replace(/l/g,'1')));
+  refs.genz.s.addEventListener('click', ()=> applyTransform(s => s.replace(/s/g,'5')));
+  refs.genz.o.addEventListener('click', ()=> applyTransform(s => s.replace(/o/g,'0')));
+  refs.genz.a.addEventListener('click', ()=> applyTransform(s => s.replace(/a/g,'4')));
+
   refs.genz.reset.addEventListener('click', ()=>{
     if (genzOriginal !== null) {
       refs.prompt.value = genzOriginal;
-      genzOriginal = null; // 다시 변환하면 새 상태를 원본으로 재설정
+      genzOriginal = null; // 다음 변형부터 새 원본을 저장
     }
   });
+
+  // ===== 하이픈 감싸기 =====
+  function wrapLetter(letter){
+    // 모든 소문자 letter를 -letter- 로
+    const re = new RegExp(letter, 'g'); // 소문자만
+    applyTransform(s => s.replace(re, `-${letter}-`));
+  }
+  refs.wrap.e.addEventListener('click', ()=> wrapLetter('e'));
+  refs.wrap.g.addEventListener('click', ()=> wrapLetter('g'));
+  refs.wrap.l.addEventListener('click', ()=> wrapLetter('l'));
+  refs.wrap.s.addEventListener('click', ()=> wrapLetter('s'));
+  refs.wrap.o.addEventListener('click', ()=> wrapLetter('o'));
+  refs.wrap.a.addEventListener('click', ()=> wrapLetter('a'));
 
   // ===== 공통 유틸 =====
   function setBusy(b){ refs.spin.style.display = b ? 'inline':'none'; refs.go.disabled = b; }
