@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안드로이드 + Gen-Z + 정지 + 자동재시도)</title>
+<title>Gemini 이미지 생성기 (안드로이드 + Gen-Z + 정지 + 자동재시도 + 1337)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; --err:#c00; }
   body{font-family:system-ui, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
@@ -41,7 +41,7 @@
   <label for="prompt">프롬프트</label>
   <textarea id="prompt">(예시) 캐릭터 다른 포즈, SD풍, 1:1</textarea>
 
-  <!-- Gen-Z 모드 -->
+  <!-- Gen-Z / 1337 -->
   <div class="row">
     <button id="genz-e" class="btn">e→3</button>
     <button id="genz-g" class="btn">g→8</button>
@@ -49,6 +49,7 @@
     <button id="genz-s" class="btn">s→5</button>
     <button id="genz-o" class="btn">o→0</button>
     <button id="genz-a" class="btn">a→4</button>
+    <button id="genz-1337" class="btn">1337 변환</button>
     <button id="genz-reset" class="btn">처음으로</button>
   </div>
 
@@ -74,11 +75,11 @@
     <span id="status" class=""></span>
   </div>
 
-  <!-- ⬆️ RAW 먼저 -->
+  <!-- RAW 위 -->
   <label for="raw">원시 응답(raw)</label>
   <textarea id="raw" readonly></textarea>
 
-  <!-- ⬇️ 이미지(썸네일) 아래로 이동 -->
+  <!-- 이미지 아래 -->
   <div id="viewer"><div style="color:#888">아직 결과 없음</div></div>
 
   <label for="b64">Base64</label>
@@ -98,7 +99,8 @@
     s: { HARASSMENT: $('s-HARASSMENT'), HATE_SPEECH: $('s-HATE_SPEECH'),
          SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'), DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
          CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY') },
-    genz: { e:$('genz-e'), g:$('genz-g'), l:$('genz-l'), s:$('genz-s'), o:$('genz-o'), a:$('genz-a'), reset:$('genz-reset') }
+    genz: { e:$('genz-e'), g:$('genz-g'), l:$('genz-l'), s:$('genz-s'), o:$('genz-o'), a:$('genz-a'),
+            leet:$('genz-1337'), reset:$('genz-reset') }
   };
 
   const SAFETY_OPTIONS = [
@@ -111,26 +113,33 @@
     sel.value = "OFF";
   });
 
-  // Gen-Z
+  // ===== Gen-Z & 1337 =====
   let genzOriginal = null;
   function ensureOriginal(){ if(genzOriginal===null) genzOriginal=refs.prompt.value; }
   function applyGenZ(map){ ensureOriginal(); refs.prompt.value = map(refs.prompt.value); }
+
+  // 단일 변환(소문자)
   refs.genz.e.onclick=()=>applyGenZ(s=>s.replace(/e/g,"3"));
   refs.genz.g.onclick=()=>applyGenZ(s=>s.replace(/g/g,"8"));
   refs.genz.l.onclick=()=>applyGenZ(s=>s.replace(/l/g,"1"));
   refs.genz.s.onclick=()=>applyGenZ(s=>s.replace(/s/g,"5"));
   refs.genz.o.onclick=()=>applyGenZ(s=>s.replace(/o/g,"0"));
   refs.genz.a.onclick=()=>applyGenZ(s=>s.replace(/a/g,"4"));
+
+  // 1337 전체 변환(대/소문자 모두)
+  function leet1337(str){
+    const map = { a:'4', b:'8', e:'3', g:'6', i:'1', l:'1', o:'0', s:'5', t:'7', z:'2' };
+    return str.replace(/[ABEGILOSTZabegilostz]/g, ch => map[ch.toLowerCase()] || ch);
+  }
+  refs.genz.leet.onclick = ()=> applyGenZ(leet1337);
+
+  // 리셋
   refs.genz.reset.onclick=()=>{ if(genzOriginal!==null){ refs.prompt.value=genzOriginal; genzOriginal=null; } };
 
-  // 상태 표시(스피너 옆)
-  function setStatus(text, kind){ // kind: 'ok' | 'err' | ''
-    refs.status.textContent = text || '';
-    refs.status.classList.remove('ok','err');
-    if (kind) refs.status.classList.add(kind);
-  }
-
+  // ===== 공통 =====
+  function setStatus(text, kind){ refs.status.textContent = text || ''; refs.status.classList.remove('ok','err'); if (kind) refs.status.classList.add(kind); }
   function showImage(b64,mime){ refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime};base64,${b64}`; refs.viewer.appendChild(img); }
+
   function base64FromFile(file){
     return new Promise((res,rej)=>{
       const fr=new FileReader();
@@ -149,12 +158,12 @@
     const m=dataUrl.match(/^data:(.+);base64,(.*)$/);return{mime:m[1],base64:m[2]};
   }
 
-  // 요청/정지/재시도 상태
+  // ===== 요청/정지/자동재시도 =====
   let currentController = null;
   let watchdogTimer = null;
   const WATCHDOG_MS = 120000; // 120초
-  let stopRequested = false;     // 정지 버튼이 눌렸는지
-  let retryCount = 0;            // 현재 재시도 횟수(1..10)
+  let stopRequested = false;
+  let retryCount = 0;
   const MAX_RETRY = 10;
   const RETRY_DELAY_MS = 5000;
 
@@ -166,22 +175,16 @@
     [refs.save, refs.copyB64, refs.openDataUrl,
      refs.endpoint, refs.token, refs.file, refs.shrink,
      refs.prompt, ...Object.values(refs.s),
-     refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.reset
+     refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.leet, refs.genz.reset
     ].forEach(el => el.disabled = disable);
   }
-  function clearWatchdog(){
-    if (watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer=null; }
-  }
+  function clearWatchdog(){ if (watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer=null; } }
   function abortInFlight(reason='사용자 정지'){
     stopRequested = true;
-    if (currentController){
-      currentController.abort();
-      currentController = null;
-    }
+    if (currentController){ currentController.abort(); currentController = null; }
     clearWatchdog();
     setBusy(false);
     setStatus(`요청 취소됨: ${reason}`,'ok');
-    // 버튼 라벨 원복
     refs.go.textContent = '이미지 만들기';
   }
 
@@ -191,20 +194,18 @@
   };
   refs.stop.onclick=()=> abortInFlight('정지 버튼 클릭');
 
-  // 재시도 트리거 판단
   function shouldAutoRetry(resp, json){
-    // 서버 래퍼가 200으로 감싸도 raw/googleStatus 안에 500 INTERNAL이 뜨는 경우가 많음
     const http500 = resp && resp.status === 500;
     const google500 = json && (json.googleStatus === 500 || json?.googleError?.code === 500);
     const internalTag = (json?.googleError?.status === 'INTERNAL') ||
                         (json?.error && typeof json.error === 'object' && json.error.status === 'INTERNAL') ||
                         (typeof json?.error === 'string' && json.error.includes('Internal error encountered')) ||
-                        (json?.googleError?.message === 'Internal error encountered.');
-    return (http500 || google500) && internalTag;
+                        (json?.googleError?.message === 'Internal error encountered.') ||
+                        (json?.error?.message === 'Internal error encountered.');
+    return (http500 || google500 || internalTag) && true;
   }
 
   async function doOneRequest(payload){
-    // Abort + 타임아웃 세팅
     currentController = new AbortController();
     const signal = currentController.signal;
     clearWatchdog();
@@ -214,16 +215,12 @@
     if(refs.token.value.trim()) headers['Authorization']='Bearer '+refs.token.value.trim();
 
     try{
-      const resp = await fetch(refs.endpoint.value,{
-        method:'POST', headers, body:JSON.stringify(payload), signal
-      });
+      const resp = await fetch(refs.endpoint.value,{ method:'POST', headers, body:JSON.stringify(payload), signal });
       const json = await resp.json().catch(()=>({ error:'JSON 파싱 실패' }));
       clearWatchdog(); currentController = null;
 
-      // RAW 항상 갱신
       refs.raw.value = json.raw ? JSON.stringify(json.raw, null, 2) : (json ? JSON.stringify(json, null, 2) : '');
 
-      // 성공
       if(json.image_base64){
         refs.b64.value = json.image_base64;
         showImage(json.image_base64, json.mime_type || 'image/png');
@@ -232,12 +229,10 @@
         return { ok:true };
       }
 
-      // 실패 시: 내부 오류면 재시도
       if (shouldAutoRetry(resp, json)){
         return { ok:false, retryable:true, json };
       }
 
-      // 실패(재시도 불가)
       const msg = '실패: ' + (json.error ? (typeof json.error==='string'? json.error : (json.error.message||'오류')) : `HTTP ${resp.status}`);
       setStatus(msg, 'err');
       return { ok:false, retryable:false, json };
@@ -253,48 +248,36 @@
   }
 
   refs.go.onclick = async ()=>{
-    // 준비
     stopRequested = false;
     retryCount = 0;
     refs.go.textContent = '이미지 만들기';
     setStatus('', '');
     setBusy(true);
 
-    // 입력 구성(파일은 첫 시도에만 읽어서 payload에 넣음; 재시도 때 동일 전송)
     try{
       let image;
       if(refs.file.files[0]){
-        image = refs.shrink.checked
-          ? await base64FromFileResized(refs.file.files[0])
-          : await base64FromFile(refs.file.files[0]);
+        image = refs.shrink.checked ? await base64FromFileResized(refs.file.files[0]) : await base64FromFile(refs.file.files[0]);
       }
       const safety={};Object.entries(refs.s).forEach(([k,sel])=>{if(sel.value)safety[k]=sel.value;});
       const payload={ prompt:refs.prompt.value, image, safety:Object.keys(safety).length?safety:undefined };
 
-      // 요청 + 재시도 루프
       for(;;){
         if (stopRequested) break;
 
         const result = await doOneRequest(payload);
         if (result.ok || result.aborted) break;
 
-        if (result.retryable && retryCount < MAX_RETRY){
+        if (result.retryable && retryCount < 10){
           retryCount++;
-          refs.go.textContent = `이미지 만들기 (재시도 ${retryCount}/${MAX_RETRY})`;
-          // 상태창에 5초 후 재시도 안내
-          setStatus(`서버 내부 오류… ${Math.round(RETRY_DELAY_MS/1000)}초 후 재시도 ${retryCount}/${MAX_RETRY}`, 'err');
+          refs.go.textContent = `이미지 만들기 (재시도 ${retryCount}/10)`;
+          setStatus(`서버 내부 오류… 5초 후 재시도 ${retryCount}/10`, 'err');
 
-          // 5초 대기 도중 정지 가능
           let waited = 0;
-          while(waited < RETRY_DELAY_MS && !stopRequested){
-            await new Promise(r=>setTimeout(r, 200));
-            waited += 200;
-          }
+          while(waited < 5000 && !stopRequested){ await new Promise(r=>setTimeout(r, 200)); waited += 200; }
           if (stopRequested) break;
-          // 다음 루프(재요청)
           continue;
-        }else{
-          // 더 이상 재시도 불가
+        } else {
           break;
         }
       }
@@ -302,7 +285,6 @@
       setStatus('오류: '+e, 'err');
     }finally{
       setBusy(false);
-      // 재시도 카운트 종료 후 버튼 라벨 원복
       refs.go.textContent = '이미지 만들기';
     }
   };
