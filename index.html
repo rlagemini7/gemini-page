@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안드로이드 + Gen-Z + 정지 + 자동재시도 + 1337)</title>
+<title>Gemini 이미지 생성기 (안드로이드 + 정지 + 자동재시도 + 1337)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; --err:#c00; }
   body{font-family:system-ui, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
@@ -65,6 +65,17 @@
     <div class="hint">기본 OFF. “기본”을 고르면 해당 항목은 요청에서 제외됩니다.</div>
   </fieldset>
 
+  <!-- ⬇️ 재시도 회수 선택 (IMAGE_SAFETY용) -->
+  <div class="row">
+    <label class="slab">IMAGE_SAFETY 재시도
+      <select id="retryImageSafety">
+        <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option>
+        <option>5</option><option>6</option><option>7</option><option>8</option><option>9</option>
+      </select>
+    </label>
+    <span class="hint">실패 사유가 IMAGE_SAFETY일 때만 자동 재요청</span>
+  </div>
+
   <div class="row">
     <button id="go" class="btn">이미지 만들기</button>
     <button id="stop" class="btn" disabled>정지</button>
@@ -96,6 +107,7 @@
     save: $('save'), copyB64: $('copyB64'), openDataUrl: $('openDataUrl'),
     spin: $('spin'), status: $('status'),
     viewer: $('viewer'), b64: $('b64'), raw: $('raw'),
+    retrySafetySel: $('retryImageSafety'),
     s: { HARASSMENT: $('s-HARASSMENT'), HATE_SPEECH: $('s-HATE_SPEECH'),
          SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'), DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
          CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY') },
@@ -117,29 +129,19 @@
   let genzOriginal = null;
   function ensureOriginal(){ if(genzOriginal===null) genzOriginal=refs.prompt.value; }
   function applyGenZ(map){ ensureOriginal(); refs.prompt.value = map(refs.prompt.value); }
-
-  // 단일 변환(소문자)
   refs.genz.e.onclick=()=>applyGenZ(s=>s.replace(/e/g,"3"));
   refs.genz.g.onclick=()=>applyGenZ(s=>s.replace(/g/g,"8"));
   refs.genz.l.onclick=()=>applyGenZ(s=>s.replace(/l/g,"1"));
   refs.genz.s.onclick=()=>applyGenZ(s=>s.replace(/s/g,"5"));
   refs.genz.o.onclick=()=>applyGenZ(s=>s.replace(/o/g,"0"));
   refs.genz.a.onclick=()=>applyGenZ(s=>s.replace(/a/g,"4"));
-
-  // 1337 전체 변환(대/소문자 모두)
-  function leet1337(str){
-    const map = { a:'4', b:'8', e:'3', g:'6', i:'1', l:'1', o:'0', s:'5', t:'7', z:'2' };
-    return str.replace(/[ABEGILOSTZabegilostz]/g, ch => map[ch.toLowerCase()] || ch);
-  }
+  function leet1337(str){ const m={a:'4',b:'8',e:'3',g:'6',i:'1',l:'1',o:'0',s:'5',t:'7',z:'2'}; return str.replace(/[ABEGILOSTZabegilostz]/g,ch=>m[ch.toLowerCase()]||ch); }
   refs.genz.leet.onclick = ()=> applyGenZ(leet1337);
-
-  // 리셋
   refs.genz.reset.onclick=()=>{ if(genzOriginal!==null){ refs.prompt.value=genzOriginal; genzOriginal=null; } };
 
-  // ===== 공통 =====
+  // ===== 공통 유틸 =====
   function setStatus(text, kind){ refs.status.textContent = text || ''; refs.status.classList.remove('ok','err'); if (kind) refs.status.classList.add(kind); }
   function showImage(b64,mime){ refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime};base64,${b64}`; refs.viewer.appendChild(img); }
-
   function base64FromFile(file){
     return new Promise((res,rej)=>{
       const fr=new FileReader();
@@ -163,8 +165,12 @@
   let watchdogTimer = null;
   const WATCHDOG_MS = 120000; // 120초
   let stopRequested = false;
-  let retryCount = 0;
-  const MAX_RETRY = 10;
+
+  // 두 종류 재시도 카운트
+  let retryInternal = 0;               // 서버 내부 오류 재시도(고정 최대 10회)
+  let retrySafety = 0;                 // IMAGE_SAFETY 재시도(사용자 선택 0~9)
+  let retryTotal = 0;                  // 총 재시도 합산
+  const MAX_INTERNAL = 10;
   const RETRY_DELAY_MS = 5000;
 
   function setBusy(isBusy){
@@ -174,7 +180,7 @@
     const disable = isBusy;
     [refs.save, refs.copyB64, refs.openDataUrl,
      refs.endpoint, refs.token, refs.file, refs.shrink,
-     refs.prompt, ...Object.values(refs.s),
+     refs.prompt, refs.retrySafetySel, ...Object.values(refs.s),
      refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.leet, refs.genz.reset
     ].forEach(el => el.disabled = disable);
   }
@@ -194,7 +200,8 @@
   };
   refs.stop.onclick=()=> abortInFlight('정지 버튼 클릭');
 
-  function shouldAutoRetry(resp, json){
+  // 재시도 판별
+  function isInternalError(resp, json){
     const http500 = resp && resp.status === 500;
     const google500 = json && (json.googleStatus === 500 || json?.googleError?.code === 500);
     const internalTag = (json?.googleError?.status === 'INTERNAL') ||
@@ -202,7 +209,14 @@
                         (typeof json?.error === 'string' && json.error.includes('Internal error encountered')) ||
                         (json?.googleError?.message === 'Internal error encountered.') ||
                         (json?.error?.message === 'Internal error encountered.');
-    return (http500 || google500 || internalTag) && true;
+    return http500 || google500 || internalTag;
+  }
+  function isImageSafetyFailure(json){
+    // candidates[].finishReason == "IMAGE_SAFETY" (raw에 있거나 최상위에 있을 수 있음)
+    const c1 = Array.isArray(json?.raw?.candidates) ? json.raw.candidates : [];
+    const c2 = Array.isArray(json?.candidates) ? json.candidates : [];
+    const arr = c1.length ? c1 : c2;
+    return arr.some(c => c?.finishReason === 'IMAGE_SAFETY');
   }
 
   async function doOneRequest(payload){
@@ -212,27 +226,29 @@
     watchdogTimer = setTimeout(()=>abortInFlight('타임아웃'), WATCHDOG_MS);
 
     const headers={'Content-Type':'application/json'};
-    if(refs.token.value.trim()) headers['Authorization']='Bearer '+refs.token.value.trim();
+    const tok = $('token').value.trim(); if (tok) headers['Authorization']='Bearer '+tok;
 
     try{
-      const resp = await fetch(refs.endpoint.value,{ method:'POST', headers, body:JSON.stringify(payload), signal });
+      const resp = await fetch($('endpoint').value,{ method:'POST', headers, body:JSON.stringify(payload), signal });
       const json = await resp.json().catch(()=>({ error:'JSON 파싱 실패' }));
       clearWatchdog(); currentController = null;
 
-      refs.raw.value = json.raw ? JSON.stringify(json.raw, null, 2) : (json ? JSON.stringify(json, null, 2) : '');
+      // RAW 항상 갱신
+      $('raw').value = json.raw ? JSON.stringify(json.raw, null, 2) : (json ? JSON.stringify(json, null, 2) : '');
 
       if(json.image_base64){
-        refs.b64.value = json.image_base64;
+        $('b64').value = json.image_base64;
         showImage(json.image_base64, json.mime_type || 'image/png');
-        refs.save.disabled=false; refs.copyB64.disabled=false; refs.openDataUrl.disabled=false;
-        setStatus('완료!', 'ok');
+        $('save').disabled=false; $('copyB64').disabled=false; $('openDataUrl').disabled=false;
+        setStatus(`완료! (재시도 ${retryTotal}회)`, 'ok');
         return { ok:true };
       }
 
-      if (shouldAutoRetry(resp, json)){
-        return { ok:false, retryable:true, json };
-      }
+      // 재시도 유형 판정
+      if (isInternalError(resp, json)) return { ok:false, retryInternal:true, json };
+      if (isImageSafetyFailure(json)) return { ok:false, retrySafety:true, json };
 
+      // 그 외 실패
       const msg = '실패: ' + (json.error ? (typeof json.error==='string'? json.error : (json.error.message||'오류')) : `HTTP ${resp.status}`);
       setStatus(msg, 'err');
       return { ok:false, retryable:false, json };
@@ -247,59 +263,76 @@
     }
   }
 
-  refs.go.onclick = async ()=>{
+  $('go').onclick = async ()=>{
     stopRequested = false;
-    retryCount = 0;
-    refs.go.textContent = '이미지 만들기';
+    retryInternal = 0;
+    retrySafety = 0;
+    retryTotal = 0;
+    $('go').textContent = '이미지 만들기';
     setStatus('', '');
     setBusy(true);
 
     try{
+      // 입력 구성(파일은 첫 시도 때만 읽어 payload에 고정)
       let image;
-      if(refs.file.files[0]){
-        image = refs.shrink.checked ? await base64FromFileResized(refs.file.files[0]) : await base64FromFile(refs.file.files[0]);
+      if($('file').files[0]){
+        image = $('shrink').checked ? await base64FromFileResized($('file').files[0]) : await base64FromFile($('file').files[0]);
       }
       const safety={};Object.entries(refs.s).forEach(([k,sel])=>{if(sel.value)safety[k]=sel.value;});
-      const payload={ prompt:refs.prompt.value, image, safety:Object.keys(safety).length?safety:undefined };
+      const payload={ prompt:$('prompt').value, image, safety:Object.keys(safety).length?safety:undefined };
 
-      for(;;){
+      const maxSafety = parseInt(refs.retrySafetySel.value || '0', 10);
+
+      while(true){
         if (stopRequested) break;
 
         const result = await doOneRequest(payload);
         if (result.ok || result.aborted) break;
 
-        if (result.retryable && retryCount < 10){
-          retryCount++;
-          refs.go.textContent = `이미지 만들기 (재시도 ${retryCount}/10)`;
-          setStatus(`서버 내부 오류… 5초 후 재시도 ${retryCount}/10`, 'err');
+        // 1) 서버 내부 오류 재시도 (최대 10회 고정)
+        if (result.retryInternal && retryInternal < MAX_INTERNAL){
+          retryInternal++; retryTotal++;
+          $('go').textContent = `이미지 만들기 (서버 재시도 ${retryInternal}/${MAX_INTERNAL})`;
+          setStatus(`서버 내부 오류… 5초 후 재시도 ${retryInternal}/${MAX_INTERNAL}`, 'err');
 
-          let waited = 0;
-          while(waited < 5000 && !stopRequested){ await new Promise(r=>setTimeout(r, 200)); waited += 200; }
+          let waited=0; while(waited<RETRY_DELAY_MS && !stopRequested){ await new Promise(r=>setTimeout(r,200)); waited+=200; }
           if (stopRequested) break;
           continue;
-        } else {
-          break;
         }
+
+        // 2) IMAGE_SAFETY 재시도 (사용자 설정 0~9회)
+        if (result.retrySafety && retrySafety < maxSafety){
+          retrySafety++; retryTotal++;
+          $('go').textContent = `이미지 만들기 (안전 재시도 ${retrySafety}/${maxSafety})`;
+          setStatus(`IMAGE_SAFETY… 5초 후 재시도 ${retrySafety}/${maxSafety}`, 'err');
+
+          let waited=0; while(waited<RETRY_DELAY_MS && !stopRequested){ await new Promise(r=>setTimeout(r,200)); waited+=200; }
+          if (stopRequested) break;
+          continue;
+        }
+
+        // 재시도 불가 → 종료
+        break;
       }
     }catch(e){
       setStatus('오류: '+e, 'err');
     }finally{
       setBusy(false);
-      refs.go.textContent = '이미지 만들기';
+      $('go').textContent = '이미지 만들기';
     }
   };
 
   // 저장/복사/열기
-  refs.save.onclick=()=>{
-    if(!refs.b64.value) return;
-    const bin=atob(refs.b64.value),arr=new Uint8Array(bin.length);
+  $('save').onclick=()=>{
+    if(!$('b64').value) return;
+    const bin=atob($('b64').value),arr=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
     const url=URL.createObjectURL(new Blob([arr],{type:'image/png'}));
     const a=document.createElement('a');a.href=url;a.download=`gemini-${Date.now()}.png`;a.click();
     URL.revokeObjectURL(url);
   };
-  refs.copyB64.onclick=()=>{ if(refs.b64.value) navigator.clipboard.writeText(refs.b64.value); };
-  refs.openDataUrl.onclick=()=>{ if(refs.b64.value) window.open(`data:image/png;base64,${refs.b64.value}`,'_blank'); };
+  $('copyB64').onclick=()=>{ if($('b64').value) navigator.clipboard.writeText($('b64').value); };
+  $('openDataUrl').onclick=()=>{ if($('b64').value) window.open(`data:image/png;base64,${$('b64').value}`,'_blank'); };
 })();
 </script>
 </body>
