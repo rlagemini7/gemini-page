@@ -2,16 +2,14 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안드로이드 + 연속생성 + 정지 + 자동재시도 + 1337)</title>
+<title>Gemini 이미지 생성기 (안드로이드 + 연속생성 + 그리드 선택 저장 + 정지/재시도/1337)</title>
 <style>
-  :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; --err:#c00; }
-  body{font-family:system-ui, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:960px;margin:auto;padding:16px}
+  :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; --err:#c00; --hi:#06c; }
+  body{font-family:system-ui, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:980px;margin:auto;padding:16px}
   .row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0;align-items:center}
   .btn, select, input[type="text"]{padding:.6rem .9rem;border:1px solid var(--b);border-radius:10px;background:#fff;color:#000}
   .btn{cursor:pointer}
   .btn[disabled]{opacity:.5;cursor:default}
-  #viewer{border:1px solid var(--b);border-radius:10px;min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden}
-  #viewer img{max-width:100%;max-height:70vh}
   textarea{width:100%;font-family:monospace}
   #prompt{min-height:110px} #b64{min-height:140px} #raw{min-height:220px}
   .thumb{max-height:120px;border:1px solid var(--b);border-radius:8px}
@@ -23,6 +21,19 @@
   #status { white-space:pre-wrap; max-width:420px }
   #status.err { color: var(--err); }
   #status.ok { color: var(--muted); }
+
+  /* 미리보기(최근 결과 1장 크게) */
+  #viewer{border:1px solid var(--b);border-radius:10px;min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-top:.5rem}
+  #viewer img{max-width:100%;max-height:70vh}
+
+  /* 갤러리 */
+  #gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:8px}
+  .card{position:relative;border:1px solid var(--b);border-radius:10px;overflow:hidden;background:#fff}
+  .card img{display:block;width:100%;height:140px;object-fit:cover}
+  .card .meta{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;font-size:.9rem}
+  .selbox{transform:scale(1.2)}
+  .badge{font-size:.75rem;color:#fff;background:var(--hi);padding:2px 6px;border-radius:999px}
+  .card.sel{outline:2px solid var(--hi)}
 </style>
 <body>
   <h2>Gemini 이미지 생성기</h2>
@@ -85,27 +96,38 @@
         <option>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
       </select>
     </label>
-    <span class="hint">ON이면 완료될 때까지 반복 생성 & 자동 저장</span>
+    <span class="hint">ON이면 완료될 때까지 반복 생성</span>
   </div>
 
   <div class="row">
     <button id="go" class="btn">이미지 만들기</button>
     <button id="stop" class="btn" disabled>정지</button>
-    <button id="save" class="btn" disabled>저장</button>
-    <button id="copyB64" class="btn" disabled>Base64</button>
-    <button id="openDataUrl" class="btn" disabled>새 탭</button>
+    <button id="save" class="btn" disabled>마지막 1장 저장</button>
+    <button id="copyB64" class="btn" disabled>마지막 Base64</button>
+    <button id="openDataUrl" class="btn" disabled>마지막 새 탭</button>
     <span id="spin" style="display:none">⏳ 생성 중</span>
     <span id="status" class=""></span>
   </div>
 
-  <!-- RAW 위 -->
+  <!-- RAW 먼저 -->
   <label for="raw">원시 응답(raw)</label>
   <textarea id="raw" readonly></textarea>
 
-  <!-- 이미지 아래 -->
+  <!-- 최근 결과 1장(크게) -->
   <div id="viewer"><div style="color:#888">아직 결과 없음</div></div>
 
-  <label for="b64">Base64</label>
+  <!-- 갤러리: 연속생성/단일성공 모두 누적표시 -->
+  <div class="row">
+    <strong>결과 그리드</strong>
+    <div style="flex:1"></div>
+    <button id="selAll" class="btn">전체 선택</button>
+    <button id="selNone" class="btn">선택 해제</button>
+    <button id="downloadSelected" class="btn" disabled>선택 저장</button>
+    <button id="clearGallery" class="btn">모두 지우기</button>
+  </div>
+  <div id="gallery"></div>
+
+  <label for="b64">마지막 결과 Base64</label>
   <textarea id="b64" readonly></textarea>
 
 <script>
@@ -121,6 +143,8 @@
     viewer: $('viewer'), b64: $('b64'), raw: $('raw'),
     retrySafetySel: $('retryImageSafety'),
     multiMode: $('multiMode'), multiCount: $('multiCount'),
+    gallery: $('gallery'),
+    selAll: $('selAll'), selNone: $('selNone'), downloadSelected: $('downloadSelected'), clearGallery: $('clearGallery'),
     s: { HARASSMENT: $('s-HARASSMENT'), HATE_SPEECH: $('s-HATE_SPEECH'),
          SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'), DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
          CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY') },
@@ -128,6 +152,7 @@
             leet:$('genz-1337'), reset:$('genz-reset') }
   };
 
+  // Safety 옵션
   const SAFETY_OPTIONS = [
     ["", "기본"], ["OFF", "OFF"], ["BLOCK_ONLY_HIGH", "HIGH↑"],
     ["BLOCK_MEDIUM_AND_ABOVE", "MED↑"], ["BLOCK_LOW_AND_ABOVE", "LOW↑"],
@@ -152,10 +177,11 @@
   refs.genz.leet.onclick = ()=> applyGenZ(leet1337);
   refs.genz.reset.onclick=()=>{ if(genzOriginal!==null){ refs.prompt.value=genzOriginal; genzOriginal=null; } };
 
-  // ===== 공통 유틸 =====
+  // ===== 상태 UI =====
   function setStatus(text, kind){ refs.status.textContent = text || ''; refs.status.classList.remove('ok','err'); if (kind) refs.status.classList.add(kind); }
   function showImage(b64,mime){ refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime};base64,${b64}`; refs.viewer.appendChild(img); }
 
+  // 파일→Base64
   function base64FromFile(file){
     return new Promise((res,rej)=>{
       const fr=new FileReader();
@@ -174,30 +200,105 @@
     const m=dataUrl.match(/^data:(.+);base64,(.*)$/);return{mime:m[1],base64:m[2]};
   }
 
-  // 저장 유틸(파일명 지정 가능)
+  // ===== 갤러리 관리 =====
+  const galleryItems = []; // {id, base64, mime, ts, selected}
+  let seq = 0;
+  function addToGallery(base64, mime){
+    const ts = new Date().toISOString().replace(/[:.]/g,'-');
+    const id = `${ts}-${(++seq)}`;
+    galleryItems.push({ id, base64, mime, ts, selected:false });
+    renderGallery();
+  }
+  function renderGallery(){
+    refs.gallery.innerHTML = galleryItems.map((it, idx) => {
+      const ext = it.mime?.includes('png')?'png':(it.mime?.includes('jpeg')?'jpg':'png');
+      return `
+        <div class="card ${it.selected?'sel':''}" data-id="${it.id}">
+          <img src="data:${it.mime||'image/png'};base64,${it.base64}" alt="result ${idx+1}">
+          <div class="meta">
+            <span class="badge">#${idx+1}</span>
+            <label style="display:flex;align-items:center;gap:6px;">
+              <input type="checkbox" class="selbox" ${it.selected?'checked':''}>
+              선택
+            </label>
+          </div>
+        </div>`;
+    }).join('');
+
+    // 이벤트 바인딩
+    [...refs.gallery.querySelectorAll('.card')].forEach(card=>{
+      const id = card.getAttribute('data-id');
+      const cb = card.querySelector('.selbox');
+      function toggle(sel){
+        const it = galleryItems.find(x=>x.id===id);
+        if (!it) return;
+        it.selected = (sel!==undefined)? sel : !it.selected;
+        card.classList.toggle('sel', it.selected);
+        cb.checked = it.selected;
+        updateDownloadSelectedState();
+      }
+      card.addEventListener('click', (e)=>{
+        if (e.target === cb) return; // 체크박스 자체 클릭은 별도
+        toggle();
+      });
+      cb.addEventListener('change', ()=> toggle(cb.checked));
+    });
+
+    updateDownloadSelectedState();
+  }
+  function updateDownloadSelectedState(){
+    const any = galleryItems.some(it=>it.selected);
+    refs.downloadSelected.disabled = !any;
+  }
+  refs.selAll.onclick = ()=>{
+    galleryItems.forEach(it=>it.selected=true);
+    renderGallery();
+  };
+  refs.selNone.onclick = ()=>{
+    galleryItems.forEach(it=>it.selected=false);
+    renderGallery();
+  };
+  refs.clearGallery.onclick = ()=>{
+    galleryItems.splice(0, galleryItems.length);
+    renderGallery();
+  };
+
+  // 저장 유틸
   function saveBase64(b64,mime, filename){
     const bin=atob(b64),arr=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
-    const blob=new Blob([arr],{type:mime});
+    const blob=new Blob([arr],{type:mime||'image/png'});
     const url=URL.createObjectURL(blob);
-    const a=document.createElement('a'); a.href=url; a.download=filename || `gemini-${Date.now()}.${mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png')}`;
+    const a=document.createElement('a'); a.href=url; a.download=filename || `gemini-${Date.now()}.${(mime||'image/png').includes('png')?'png':'jpg'}`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   }
+  refs.downloadSelected.onclick = async ()=>{
+    const sel = galleryItems.filter(it=>it.selected);
+    if (!sel.length) return;
+    setStatus(`선택 ${sel.length}장 저장 중…`, 'ok');
+    for (let i=0;i<sel.length;i++){
+      const it = sel[i];
+      const ext = it.mime?.includes('png')?'png':(it.mime?.includes('jpeg')?'jpg':'png');
+      const filename = `gemini-${it.ts}-${String(i+1).padStart(2,'0')}of${String(sel.length).padStart(2,'0')}.${ext}`;
+      saveBase64(it.base64, it.mime||'image/png', filename);
+      await new Promise(r=>setTimeout(r,250)); // 다운로드 연타 완화
+    }
+    setStatus(`선택 ${sel.length}장 저장 완료`, 'ok');
+  };
 
-  // ===== 요청/정지/자동재시도 =====
+  // ===== 요청/정지/자동재시도/연속생성 =====
   let currentController = null;
   let watchdogTimer = null;
   const WATCHDOG_MS = 120000; // 120초
   let stopRequested = false;
 
-  // 두 종류 재시도 카운트 (각 "시도" 단위로 리셋)
-  let retryInternal = 0;               // 서버 내부 오류(고정 10회)
-  let retrySafety = 0;                 // IMAGE_SAFETY(사용자 설정 0~9)
-  let retryTotal = 0;                  // 이번 시도의 총 재시도 수
+  let retryInternal = 0;
+  let retrySafety = 0;
+  let retryTotal = 0;
   const MAX_INTERNAL = 10;
 
-  // 대기시간 1초
+  // 1초 대기
   const RETRY_DELAY_MS = 1000;
   const RETRY_DELAY_SEC = Math.round(RETRY_DELAY_MS/1000);
 
@@ -209,7 +310,8 @@
     [refs.save, refs.copyB64, refs.openDataUrl,
      refs.endpoint, refs.token, refs.file, refs.shrink,
      refs.prompt, refs.retrySafetySel, refs.multiMode, refs.multiCount, ...Object.values(refs.s),
-     refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.leet, refs.genz.reset
+     refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.leet, refs.genz.reset,
+     refs.selAll, refs.selNone, refs.downloadSelected, refs.clearGallery
     ].forEach(el => el.disabled = disable);
   }
   function clearWatchdog(){ if (watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer=null; } }
@@ -265,8 +367,11 @@
       if(json.image_base64){
         refs.b64.value = json.image_base64;
         showImage(json.image_base64, json.mime_type || 'image/png');
-        // 여기서는 버튼 활성화는 하지 않음(전체 실행 끝난 뒤 setBusy(false)에서 처리)
+        // 갤러리에 누적
+        addToGallery(json.image_base64, json.mime_type || 'image/png');
         setStatus(`완료! (재시도 ${retryTotal}회)`, 'ok');
+        // 마지막 1장 관련 버튼 활성화
+        refs.save.disabled=false; refs.copyB64.disabled=false; refs.openDataUrl.disabled=false;
         return { ok:true, mime: (json.mime_type || 'image/png') };
       }
 
@@ -287,7 +392,7 @@
     }
   }
 
-  // 짧은 sleep (정지 버튼 반영 위해 200ms 간격 루프 사용)
+  // 정지 반영되는 sleep
   function delay(ms){
     return new Promise(async (resolve)=>{
       let waited=0;
@@ -311,16 +416,14 @@
       const safety={};Object.entries(refs.s).forEach(([k,sel])=>{if(sel.value)safety[k]=sel.value;});
       const basePayload={ prompt:refs.prompt.value, image, safety:Object.keys(safety).length?safety:undefined };
 
-      // 연속생성 파라미터
       const target = refs.multiMode.checked ? parseInt(refs.multiCount.value || '1', 10) : 1;
       let successSoFar = 0;
       refs.go.textContent = target>1 ? `이미지 만들기 (연속 0/${target})` : '이미지 만들기';
 
       while(!stopRequested && successSoFar < target){
-        // 각 "시도" 시작 시 재시도 카운터 리셋
+        // 시도 단위 카운터 리셋
         retryInternal = 0; retrySafety = 0; retryTotal = 0;
 
-        // (선택) 매 시도마다 payload를 새로 구성하고 싶다면 여기서 복사/변형
         const payload = { ...basePayload };
 
         // 내부 재시도 루프
@@ -330,22 +433,14 @@
           const result = await doOneRequest(payload);
           if (result.ok){
             successSoFar++;
-            // 연속 모드일 때 자동 저장
-            if (refs.multiMode.checked && refs.b64.value){
-              const ts = new Date().toISOString().replace(/[:.]/g,'-');
-              const mime = result.mime || 'image/png';
-              const ext = mime.includes('png')?'png':(mime.includes('jpeg')?'jpg':'png');
-              const filename = `gemini-${ts}-${String(successSoFar).padStart(2,'0')}of${String(target).padStart(2,'0')}.${ext}`;
-              saveBase64(refs.b64.value, mime, filename);
-            }
             setStatus(`완료! (재시도 ${retryTotal}회) • 연속 ${successSoFar}/${target}`, 'ok');
             refs.go.textContent = target>1 ? `이미지 만들기 (연속 ${successSoFar}/${target})` : '이미지 만들기';
-            break; // 이번 시도 성공 → 다음 장으로
+            break; // 다음 장
           }
 
           if (result.aborted){ break; }
 
-          // 서버 내부 오류 재시도
+          // 서버 내부 오류
           if (result.retryInternal && retryInternal < MAX_INTERNAL){
             retryInternal++; retryTotal++;
             refs.go.textContent = target>1
@@ -355,7 +450,7 @@
             await delay(RETRY_DELAY_MS); continue;
           }
 
-          // IMAGE_SAFETY 재시도
+          // IMAGE_SAFETY
           const maxSafety = parseInt(refs.retrySafetySel.value || '0', 10);
           if (result.retrySafety && retrySafety < maxSafety){
             retrySafety++; retryTotal++;
@@ -366,29 +461,32 @@
             await delay(RETRY_DELAY_MS); continue;
           }
 
-          // 재시도 불가 → 이번 시도 종료 (연속 모드면 다음 시도로 넘어감)
+          // 재시도 불가
           break;
-        } // end inner retry loop
-
-        // 연속 모드에서 실패했더라도 다음 시도 진행 (stop으로 중단 가능)
-        if (!stopRequested && successSoFar < target){
-          await delay(RETRY_DELAY_MS); // 다음 시도 전 짧은 간격
         }
-      } // end outer success loop
+
+        if (!stopRequested && successSoFar < target){
+          await delay(RETRY_DELAY_MS); // 다음 시도 앞 간격
+        }
+      }
     }catch(e){
       setStatus('오류: '+e, 'err');
     }finally{
       setBusy(false);
       refs.go.textContent = '이미지 만들기';
-      // 최종적으로 수동 버튼들 활성화
+      // 마지막 1장 관련 수동 버튼 상태 보정
       refs.save.disabled = !refs.b64.value;
       refs.copyB64.disabled = !refs.b64.value;
       refs.openDataUrl.disabled = !refs.b64.value;
+      updateDownloadSelectedState();
     }
   };
 
-  // 저장/복사/열기(수동)
-  refs.save.onclick=()=>{ if(!refs.b64.value) return; saveBase64(refs.b64.value, 'image/png'); };
+  // 마지막 1장 관련 수동 액션
+  refs.save.onclick=()=>{
+    if(!refs.b64.value) return;
+    saveBase64(refs.b64.value, 'image/png');
+  };
   refs.copyB64.onclick=()=>{ if(refs.b64.value) navigator.clipboard.writeText(refs.b64.value); };
   refs.openDataUrl.onclick=()=>{ if(refs.b64.value) window.open(`data:image/png;base64,${refs.b64.value}`,'_blank'); };
 })();
