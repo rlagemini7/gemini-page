@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안드로이드 + 연속생성 + 그리드 선택 저장 + 정지/재시도/1337)</title>
+<title>Gemini 이미지 생성기 (안드로이드 + 연속생성 + 그리드 선택 보기/저장)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; --err:#c00; --hi:#06c; }
   body{font-family:system-ui, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:980px;margin:auto;padding:16px}
@@ -22,16 +22,15 @@
   #status.err { color: var(--err); }
   #status.ok { color: var(--muted); }
 
-  /* 미리보기(최근 결과 1장 크게) */
+  /* 미리보기(선택/최근 결과 크게) */
   #viewer{border:1px solid var(--b);border-radius:10px;min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-top:.5rem}
   #viewer img{max-width:100%;max-height:70vh}
 
   /* 갤러리 */
   #gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:8px}
-  .card{position:relative;border:1px solid var(--b);border-radius:10px;overflow:hidden;background:#fff}
+  .card{position:relative;border:1px solid var(--b);border-radius:10px;overflow:hidden;background:#fff;cursor:pointer}
   .card img{display:block;width:100%;height:140px;object-fit:cover}
   .card .meta{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;font-size:.9rem}
-  .selbox{transform:scale(1.2)}
   .badge{font-size:.75rem;color:#fff;background:var(--hi);padding:2px 6px;border-radius:999px}
   .card.sel{outline:2px solid var(--hi)}
 </style>
@@ -102,9 +101,9 @@
   <div class="row">
     <button id="go" class="btn">이미지 만들기</button>
     <button id="stop" class="btn" disabled>정지</button>
-    <button id="save" class="btn" disabled>마지막 1장 저장</button>
-    <button id="copyB64" class="btn" disabled>마지막 Base64</button>
-    <button id="openDataUrl" class="btn" disabled>마지막 새 탭</button>
+    <button id="save" class="btn" disabled>선택 저장</button>
+    <button id="copyB64" class="btn" disabled>선택 Base64</button>
+    <button id="openDataUrl" class="btn" disabled>선택 새 탭</button>
     <span id="spin" style="display:none">⏳ 생성 중</span>
     <span id="status" class=""></span>
   </div>
@@ -113,21 +112,18 @@
   <label for="raw">원시 응답(raw)</label>
   <textarea id="raw" readonly></textarea>
 
-  <!-- 최근 결과 1장(크게) -->
+  <!-- 선택/최근 결과 크게 -->
   <div id="viewer"><div style="color:#888">아직 결과 없음</div></div>
 
-  <!-- 갤러리: 연속생성/단일성공 모두 누적표시 -->
+  <!-- 갤러리 -->
   <div class="row">
-    <strong>결과 그리드</strong>
+    <strong>결과 그리드 (카드 탭하면 선택됨)</strong>
     <div style="flex:1"></div>
-    <button id="selAll" class="btn">전체 선택</button>
-    <button id="selNone" class="btn">선택 해제</button>
-    <button id="downloadSelected" class="btn" disabled>선택 저장</button>
     <button id="clearGallery" class="btn">모두 지우기</button>
   </div>
   <div id="gallery"></div>
 
-  <label for="b64">마지막 결과 Base64</label>
+  <label for="b64">선택 항목 Base64</label>
   <textarea id="b64" readonly></textarea>
 
 <script>
@@ -143,8 +139,7 @@
     viewer: $('viewer'), b64: $('b64'), raw: $('raw'),
     retrySafetySel: $('retryImageSafety'),
     multiMode: $('multiMode'), multiCount: $('multiCount'),
-    gallery: $('gallery'),
-    selAll: $('selAll'), selNone: $('selNone'), downloadSelected: $('downloadSelected'), clearGallery: $('clearGallery'),
+    gallery: $('gallery'), clearGallery: $('clearGallery'),
     s: { HARASSMENT: $('s-HARASSMENT'), HATE_SPEECH: $('s-HATE_SPEECH'),
          SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'), DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
          CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY') },
@@ -177,9 +172,11 @@
   refs.genz.leet.onclick = ()=> applyGenZ(leet1337);
   refs.genz.reset.onclick=()=>{ if(genzOriginal!==null){ refs.prompt.value=genzOriginal; genzOriginal=null; } };
 
-  // ===== 상태 UI =====
+  // ===== 상태/미리보기 =====
   function setStatus(text, kind){ refs.status.textContent = text || ''; refs.status.classList.remove('ok','err'); if (kind) refs.status.classList.add(kind); }
-  function showImage(b64,mime){ refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime};base64,${b64}`; refs.viewer.appendChild(img); }
+  function showInViewer(b64,mime){
+    refs.viewer.innerHTML=''; const img=new Image(); img.src=`data:${mime||'image/png'};base64,${b64}`; refs.viewer.appendChild(img);
+  }
 
   // 파일→Base64
   function base64FromFile(file){
@@ -200,70 +197,72 @@
     const m=dataUrl.match(/^data:(.+);base64,(.*)$/);return{mime:m[1],base64:m[2]};
   }
 
-  // ===== 갤러리 관리 =====
-  const galleryItems = []; // {id, base64, mime, ts, selected}
+  // ===== 갤러리(단일 선택) =====
+  const galleryItems = []; // {id, base64, mime, ts}
   let seq = 0;
+  let currentSelectedId = null;
+
   function addToGallery(base64, mime){
     const ts = new Date().toISOString().replace(/[:.]/g,'-');
     const id = `${ts}-${(++seq)}`;
-    galleryItems.push({ id, base64, mime, ts, selected:false });
+    galleryItems.push({ id, base64, mime: mime||'image/png', ts });
+    // 새로 추가된 항목을 자동 선택
+    setSelection(id);
     renderGallery();
   }
-  function renderGallery(){
-    refs.gallery.innerHTML = galleryItems.map((it, idx) => {
-      const ext = it.mime?.includes('png')?'png':(it.mime?.includes('jpeg')?'jpg':'png');
-      return `
-        <div class="card ${it.selected?'sel':''}" data-id="${it.id}">
-          <img src="data:${it.mime||'image/png'};base64,${it.base64}" alt="result ${idx+1}">
-          <div class="meta">
-            <span class="badge">#${idx+1}</span>
-            <label style="display:flex;align-items:center;gap:6px;">
-              <input type="checkbox" class="selbox" ${it.selected?'checked':''}>
-              선택
-            </label>
-          </div>
-        </div>`;
-    }).join('');
 
-    // 이벤트 바인딩
+  function setSelection(id){
+    currentSelectedId = id;
+    const it = galleryItems.find(x=>x.id===id);
+    if (it){
+      showInViewer(it.base64, it.mime);
+      refs.b64.value = it.base64;
+      updateActionState(true);
+    } else {
+      refs.viewer.innerHTML = '<div style="color:#888">선택 없음</div>';
+      refs.b64.value = '';
+      updateActionState(false);
+    }
+    // 갤러리 외곽선 업데이트
     [...refs.gallery.querySelectorAll('.card')].forEach(card=>{
-      const id = card.getAttribute('data-id');
-      const cb = card.querySelector('.selbox');
-      function toggle(sel){
-        const it = galleryItems.find(x=>x.id===id);
-        if (!it) return;
-        it.selected = (sel!==undefined)? sel : !it.selected;
-        card.classList.toggle('sel', it.selected);
-        cb.checked = it.selected;
-        updateDownloadSelectedState();
-      }
-      card.addEventListener('click', (e)=>{
-        if (e.target === cb) return; // 체크박스 자체 클릭은 별도
-        toggle();
-      });
-      cb.addEventListener('change', ()=> toggle(cb.checked));
+      card.classList.toggle('sel', card.getAttribute('data-id') === currentSelectedId);
     });
+  }
 
-    updateDownloadSelectedState();
+  function renderGallery(){
+    refs.gallery.innerHTML = galleryItems.map((it, idx) => `
+      <div class="card ${it.id===currentSelectedId?'sel':''}" data-id="${it.id}" title="클릭해서 선택">
+        <img src="data:${it.mime};base64,${it.base64}" alt="result ${idx+1}">
+        <div class="meta">
+          <span class="badge">#${idx+1}</span>
+          <span style="color:#666;font-size:.8rem">${it.mime.includes('png')?'PNG':'JPG'}</span>
+        </div>
+      </div>
+    `).join('');
+
+    // 클릭 → 단일 선택 & 큰창 표시
+    [...refs.gallery.querySelectorAll('.card')].forEach(card=>{
+      card.addEventListener('click', ()=>{
+        const id = card.getAttribute('data-id');
+        setSelection(id);
+      });
+    });
   }
-  function updateDownloadSelectedState(){
-    const any = galleryItems.some(it=>it.selected);
-    refs.downloadSelected.disabled = !any;
+
+  function updateActionState(hasSel){
+    refs.save.disabled = !hasSel;
+    refs.copyB64.disabled = !hasSel;
+    refs.openDataUrl.disabled = !hasSel;
   }
-  refs.selAll.onclick = ()=>{
-    galleryItems.forEach(it=>it.selected=true);
-    renderGallery();
-  };
-  refs.selNone.onclick = ()=>{
-    galleryItems.forEach(it=>it.selected=false);
-    renderGallery();
-  };
+
   refs.clearGallery.onclick = ()=>{
     galleryItems.splice(0, galleryItems.length);
+    currentSelectedId = null;
     renderGallery();
+    setSelection(null);
   };
 
-  // 저장 유틸
+  // 저장/복사/열기 (선택 항목 기준)
   function saveBase64(b64,mime, filename){
     const bin=atob(b64),arr=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
@@ -273,19 +272,15 @@
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   }
-  refs.downloadSelected.onclick = async ()=>{
-    const sel = galleryItems.filter(it=>it.selected);
-    if (!sel.length) return;
-    setStatus(`선택 ${sel.length}장 저장 중…`, 'ok');
-    for (let i=0;i<sel.length;i++){
-      const it = sel[i];
-      const ext = it.mime?.includes('png')?'png':(it.mime?.includes('jpeg')?'jpg':'png');
-      const filename = `gemini-${it.ts}-${String(i+1).padStart(2,'0')}of${String(sel.length).padStart(2,'0')}.${ext}`;
-      saveBase64(it.base64, it.mime||'image/png', filename);
-      await new Promise(r=>setTimeout(r,250)); // 다운로드 연타 완화
-    }
-    setStatus(`선택 ${sel.length}장 저장 완료`, 'ok');
+  refs.save.onclick=()=>{
+    const it = galleryItems.find(x=>x.id===currentSelectedId);
+    if(!it) return;
+    const ext = it.mime.includes('png')?'png':(it.mime.includes('jpeg')?'jpg':'png');
+    const filename = `gemini-${it.ts}.${ext}`;
+    saveBase64(it.base64, it.mime, filename);
   };
+  refs.copyB64.onclick=()=>{ const it=galleryItems.find(x=>x.id===currentSelectedId); if(it) navigator.clipboard.writeText(it.base64); };
+  refs.openDataUrl.onclick=()=>{ const it=galleryItems.find(x=>x.id===currentSelectedId); if(it) window.open(`data:${it.mime};base64,${it.base64}`,'_blank'); };
 
   // ===== 요청/정지/자동재시도/연속생성 =====
   let currentController = null;
@@ -311,7 +306,7 @@
      refs.endpoint, refs.token, refs.file, refs.shrink,
      refs.prompt, refs.retrySafetySel, refs.multiMode, refs.multiCount, ...Object.values(refs.s),
      refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.leet, refs.genz.reset,
-     refs.selAll, refs.selNone, refs.downloadSelected, refs.clearGallery
+     refs.clearGallery
     ].forEach(el => el.disabled = disable);
   }
   function clearWatchdog(){ if (watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer=null; } }
@@ -365,14 +360,11 @@
       refs.raw.value = json.raw ? JSON.stringify(json.raw, null, 2) : (json ? JSON.stringify(json, null, 2) : '');
 
       if(json.image_base64){
-        refs.b64.value = json.image_base64;
-        showImage(json.image_base64, json.mime_type || 'image/png');
-        // 갤러리에 누적
+        // 갤러리에 넣고 자동 선택 → 미리보기/버튼 갱신
         addToGallery(json.image_base64, json.mime_type || 'image/png');
+        retryTotal = retryTotal|0; // noop
         setStatus(`완료! (재시도 ${retryTotal}회)`, 'ok');
-        // 마지막 1장 관련 버튼 활성화
-        refs.save.disabled=false; refs.copyB64.disabled=false; refs.openDataUrl.disabled=false;
-        return { ok:true, mime: (json.mime_type || 'image/png') };
+        return { ok:true };
       }
 
       if (isInternalError(resp, json)) return { ok:false, retryInternal:true, json };
@@ -392,7 +384,6 @@
     }
   }
 
-  // 정지 반영되는 sleep
   function delay(ms){
     return new Promise(async (resolve)=>{
       let waited=0;
@@ -441,13 +432,13 @@
           if (result.aborted){ break; }
 
           // 서버 내부 오류
-          if (result.retryInternal && retryInternal < MAX_INTERNAL){
+          if (result.retryInternal && retryInternal < 10){
             retryInternal++; retryTotal++;
             refs.go.textContent = target>1
-              ? `이미지 만들기 (연속 ${successSoFar}/${target} · 서버 재시도 ${retryInternal}/${MAX_INTERNAL})`
-              : `이미지 만들기 (서버 재시도 ${retryInternal}/${MAX_INTERNAL})`;
-            setStatus(`서버 내부 오류… ${RETRY_DELAY_SEC}초 후 재시도 ${retryInternal}/${MAX_INTERNAL}`, 'err');
-            await delay(RETRY_DELAY_MS); continue;
+              ? `이미지 만들기 (연속 ${successSoFar}/${target} · 서버 재시도 ${retryInternal}/10)`
+              : `이미지 만들기 (서버 재시도 ${retryInternal}/10)`;
+            setStatus(`서버 내부 오류… 1초 후 재시도 ${retryInternal}/10`, 'err');
+            await delay(1000); continue;
           }
 
           // IMAGE_SAFETY
@@ -457,8 +448,8 @@
             refs.go.textContent = target>1
               ? `이미지 만들기 (연속 ${successSoFar}/${target} · 안전 재시도 ${retrySafety}/${maxSafety})`
               : `이미지 만들기 (안전 재시도 ${retrySafety}/${maxSafety})`;
-            setStatus(`IMAGE_SAFETY… ${RETRY_DELAY_SEC}초 후 재시도 ${retrySafety}/${maxSafety}`, 'err');
-            await delay(RETRY_DELAY_MS); continue;
+            setStatus(`IMAGE_SAFETY… 1초 후 재시도 ${retrySafety}/${maxSafety}`, 'err');
+            await delay(1000); continue;
           }
 
           // 재시도 불가
@@ -466,7 +457,7 @@
         }
 
         if (!stopRequested && successSoFar < target){
-          await delay(RETRY_DELAY_MS); // 다음 시도 앞 간격
+          await delay(1000); // 다음 시도 전 짧은 간격
         }
       }
     }catch(e){
@@ -474,21 +465,9 @@
     }finally{
       setBusy(false);
       refs.go.textContent = '이미지 만들기';
-      // 마지막 1장 관련 수동 버튼 상태 보정
-      refs.save.disabled = !refs.b64.value;
-      refs.copyB64.disabled = !refs.b64.value;
-      refs.openDataUrl.disabled = !refs.b64.value;
-      updateDownloadSelectedState();
+      updateActionState(!!currentSelectedId);
     }
   };
-
-  // 마지막 1장 관련 수동 액션
-  refs.save.onclick=()=>{
-    if(!refs.b64.value) return;
-    saveBase64(refs.b64.value, 'image/png');
-  };
-  refs.copyB64.onclick=()=>{ if(refs.b64.value) navigator.clipboard.writeText(refs.b64.value); };
-  refs.openDataUrl.onclick=()=>{ if(refs.b64.value) window.open(`data:image/png;base64,${refs.b64.value}`,'_blank'); };
 })();
 </script>
 </body>
