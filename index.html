@@ -205,7 +205,7 @@
   function addToGallery(base64, mime){
     const ts = new Date().toISOString().replace(/[:.]/g,'-');
     const id = `${ts}-${(++seq)}`;
-    galleryItems.push({ id, base64, mime: mime||'image/png', ts });
+    galleryItems.unshift({ id, base64, mime: mime||'image/png', ts });
     // 새로 추가된 항목을 자동 선택
     setSelection(id);
     renderGallery();
