@@ -2,7 +2,7 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gemini 이미지 생성기 (안드로이드 + 연속생성 + 그리드 선택 보기/저장)</title>
+<title>Gemini 이미지 생성기 (안드로이드 + 연속생성 + 그리드 선택/저장 + RAW 화살표 탐색)</title>
 <style>
   :root { --fg:#111; --muted:#666; --bg:#fff; --b:#ddd; --err:#c00; --hi:#06c; }
   body{font-family:system-ui, Roboto, Arial; color:var(--fg); background:var(--bg); max-width:980px;margin:auto;padding:16px}
@@ -22,7 +22,7 @@
   #status.err { color: var(--err); }
   #status.ok { color: var(--muted); }
 
-  /* 미리보기(선택/최근 결과 크게) */
+  /* 미리보기 */
   #viewer{border:1px solid var(--b);border-radius:10px;min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-top:.5rem}
   #viewer img{max-width:100%;max-height:70vh}
 
@@ -33,6 +33,10 @@
   .card .meta{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;font-size:.9rem}
   .badge{font-size:.75rem;color:#fff;background:var(--hi);padding:2px 6px;border-radius:999px}
   .card.sel{outline:2px solid var(--hi)}
+
+  /* RAW 영역 상단 네비게이션 */
+  .raw-nav{display:flex;align-items:center;gap:.5rem}
+  .raw-nav .navbtn{min-width:44px}
 </style>
 <body>
   <h2>Gemini 이미지 생성기</h2>
@@ -108,8 +112,12 @@
     <span id="status" class=""></span>
   </div>
 
-  <!-- RAW 먼저 -->
-  <label for="raw">원시 응답(raw)</label>
+  <!-- RAW 위 + 좌우 화살표 -->
+  <div class="row raw-nav">
+    <button id="navNewer" class="btn navbtn" title="더 최신(위쪽)으로">◀</button>
+    <label for="raw" style="font-weight:600">원시 응답(raw)</label>
+    <button id="navOlder" class="btn navbtn" title="더 과거(아래쪽)으로">▶</button>
+  </div>
   <textarea id="raw" readonly></textarea>
 
   <!-- 선택/최근 결과 크게 -->
@@ -140,6 +148,7 @@
     retrySafetySel: $('retryImageSafety'),
     multiMode: $('multiMode'), multiCount: $('multiCount'),
     gallery: $('gallery'), clearGallery: $('clearGallery'),
+    navNewer: $('navNewer'), navOlder: $('navOlder'),
     s: { HARASSMENT: $('s-HARASSMENT'), HATE_SPEECH: $('s-HATE_SPEECH'),
          SEXUALLY_EXPLICIT: $('s-SEXUALLY_EXPLICIT'), DANGEROUS_CONTENT: $('s-DANGEROUS_CONTENT'),
          CIVIC_INTEGRITY: $('s-CIVIC_INTEGRITY') },
@@ -191,13 +200,14 @@
     const img=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=()=>rej("load");im.src=url;});
     const w=img.width,h=img.height,sc=Math.min(1,max/Math.max(w,h));
     const canvas=document.createElement('canvas');canvas.width=w*sc;canvas.height=h*sc;
-    canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+    const ctx=canvas.getContext('2d'); ctx.drawImage(img,0,0,canvas.width,canvas.height);
     const dataUrl=canvas.toDataURL(file.type.includes('png')?'image/png':'image/jpeg',0.9);
     URL.revokeObjectURL(url);
     const m=dataUrl.match(/^data:(.+);base64,(.*)$/);return{mime:m[1],base64:m[2]};
   }
 
   // ===== 갤러리(단일 선택) =====
+  // 최신이 맨 위로 오도록: 새 항목은 배열 앞에 unshift
   const galleryItems = []; // {id, base64, mime, ts}
   let seq = 0;
   let currentSelectedId = null;
@@ -205,10 +215,15 @@
   function addToGallery(base64, mime){
     const ts = new Date().toISOString().replace(/[:.]/g,'-');
     const id = `${ts}-${(++seq)}`;
-    galleryItems.unshift({ id, base64, mime: mime||'image/png', ts });
-    // 새로 추가된 항목을 자동 선택
-    setSelection(id);
+    galleryItems.unshift({ id, base64, mime: mime||'image/png', ts }); // 최신이 앞
     renderGallery();
+    setSelection(id); // 새 결과 자동 선택(=최신)
+  }
+
+  function getIndexById(id){ return galleryItems.findIndex(x=>x.id===id); }
+  function selectByIndex(idx){
+    if (idx<0 || idx>=galleryItems.length) return;
+    setSelection(galleryItems[idx].id);
   }
 
   function setSelection(id){
@@ -255,6 +270,22 @@
     refs.openDataUrl.disabled = !hasSel;
   }
 
+  // RAW 양옆 화살표: ◀(더 최신/앞쪽 index-1), ▶(더 과거/뒤쪽 index+1)
+  refs.navNewer.onclick = ()=>{
+    if (!galleryItems.length) { setStatus('갤러리가 비어있어요', 'err'); return; }
+    if (!currentSelectedId) { selectByIndex(0); return; } // 처음이면 최신으로
+    const idx = getIndexById(currentSelectedId);
+    if (idx <= 0) { setStatus('최신 항목입니다', 'ok'); return; }
+    selectByIndex(idx-1);
+  };
+  refs.navOlder.onclick = ()=>{
+    if (!galleryItems.length) { setStatus('갤러리가 비어있어요', 'err'); return; }
+    if (!currentSelectedId) { selectByIndex(galleryItems.length-1); return; } // 처음이면 가장 과거로
+    const idx = getIndexById(currentSelectedId);
+    if (idx >= galleryItems.length-1) { setStatus('가장 과거 항목입니다', 'ok'); return; }
+    selectByIndex(idx+1);
+  };
+
   refs.clearGallery.onclick = ()=>{
     galleryItems.splice(0, galleryItems.length);
     currentSelectedId = null;
@@ -262,7 +293,7 @@
     setSelection(null);
   };
 
-  // 저장/복사/열기 (선택 항목 기준)
+  // 저장/복사/열기 (선택 기준)
   function saveBase64(b64,mime, filename){
     const bin=atob(b64),arr=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
@@ -306,7 +337,7 @@
      refs.endpoint, refs.token, refs.file, refs.shrink,
      refs.prompt, refs.retrySafetySel, refs.multiMode, refs.multiCount, ...Object.values(refs.s),
      refs.genz.e, refs.genz.g, refs.genz.l, refs.genz.s, refs.genz.o, refs.genz.a, refs.genz.leet, refs.genz.reset,
-     refs.clearGallery
+     refs.clearGallery, refs.navNewer, refs.navOlder
     ].forEach(el => el.disabled = disable);
   }
   function clearWatchdog(){ if (watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer=null; } }
@@ -360,9 +391,7 @@
       refs.raw.value = json.raw ? JSON.stringify(json.raw, null, 2) : (json ? JSON.stringify(json, null, 2) : '');
 
       if(json.image_base64){
-        // 갤러리에 넣고 자동 선택 → 미리보기/버튼 갱신
-        addToGallery(json.image_base64, json.mime_type || 'image/png');
-        retryTotal = retryTotal|0; // noop
+        addToGallery(json.image_base64, json.mime_type || 'image/png'); // 최신이 앞
         setStatus(`완료! (재시도 ${retryTotal}회)`, 'ok');
         return { ok:true };
       }
@@ -412,12 +441,9 @@
       refs.go.textContent = target>1 ? `이미지 만들기 (연속 0/${target})` : '이미지 만들기';
 
       while(!stopRequested && successSoFar < target){
-        // 시도 단위 카운터 리셋
         retryInternal = 0; retrySafety = 0; retryTotal = 0;
-
         const payload = { ...basePayload };
 
-        // 내부 재시도 루프
         while(true){
           if (stopRequested) break;
 
@@ -426,7 +452,7 @@
             successSoFar++;
             setStatus(`완료! (재시도 ${retryTotal}회) • 연속 ${successSoFar}/${target}`, 'ok');
             refs.go.textContent = target>1 ? `이미지 만들기 (연속 ${successSoFar}/${target})` : '이미지 만들기';
-            break; // 다음 장
+            break;
           }
 
           if (result.aborted){ break; }
@@ -452,12 +478,11 @@
             await delay(1000); continue;
           }
 
-          // 재시도 불가
-          break;
+          break; // 재시도 불가
         }
 
         if (!stopRequested && successSoFar < target){
-          await delay(1000); // 다음 시도 전 짧은 간격
+          await delay(1000); // 다음 시도 간격
         }
       }
     }catch(e){
@@ -465,7 +490,9 @@
     }finally{
       setBusy(false);
       refs.go.textContent = '이미지 만들기';
-      updateActionState(!!currentSelectedId);
+      // 선택 상태에 맞춰 액션 버튼 상태 보정
+      const hasSel = !!galleryItems.find(x=>x.id===currentSelectedId);
+      updateActionState(hasSel);
     }
   };
 })();
