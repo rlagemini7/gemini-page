@@ -439,73 +439,81 @@
   }
 
   async function doOneRequest(payload){
-    const controller = new AbortController();
-    currentControllers.push(controller);
+  const controller = new AbortController();
+  currentControllers.push(controller);
 
-    const headers = { 'Content-Type':'application/json' };
-    const tok = refs.token.value.trim();
-    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+  const headers = { 'Content-Type':'application/json' };
 
-    try {
-      const resp = await fetch(refs.endpoint.value, {
-        method:'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-      const json = await resp.json().catch(() => ({ error:'JSON 파싱 실패' }));
+  try {
+    const resp = await fetch(refs.endpoint.value, {
+      method:'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
 
-      refs.raw.value = json.raw ? JSON.stringify(json.raw, null, 2) : JSON.stringify(json, null, 2);
+    const json = await resp.json().catch(() => ({ error:'JSON 파싱 실패' }));
 
-      if (json.image_base64) {
-        addToGallery(json.image_base64, json.mime_type || 'image/png');
-        return { ok:true };
-      }
-      if (isInternalError(resp, json)) return { ok:false, type:'internal' };
-      if (isImageSafetyFailure(json)) return { ok:false, type:'safety' };
+    refs.raw.value = json.raw
+      ? JSON.stringify(json.raw, null, 2)
+      : JSON.stringify(json, null, 2);
 
-      return {
-        ok:false,
-        type:'fatal',
-        message:'실패: ' + (json.error ? (typeof json.error === 'string' ? json.error : (json.error.message || '오류')) : `HTTP ${resp.status}`)
-      };
-    } catch (err) {
-      if (err.name === 'AbortError') return { ok:false, aborted:true };
-      return { ok:false, type:'fatal', message:'오류: ' + err };
-    } finally {
-      currentControllers = currentControllers.filter(c => c !== controller);
+    // 성공 조건: 이미지가 실제로 왔을 때만
+    if (json.image_base64) {
+      addToGallery(json.image_base64, json.mime_type || 'image/png');
+      return { ok:true };
     }
+
+    // 이미지가 없으면 이유 불문 전부 재시도 대상으로 처리
+    return {
+      ok:false,
+      type:'retryable',
+      message: json?.error
+        ? (typeof json.error === 'string' ? json.error : (json.error.message || '이미지 없음'))
+        : '이미지가 도착하지 않음'
+    };
+
+  } catch (err) {
+    if (err.name === 'AbortError') return { ok:false, aborted:true };
+
+    // fetch 실패도 재시도 대상으로 처리
+    return {
+      ok:false,
+      type:'retryable',
+      message:'오류: ' + err
+    };
+  } finally {
+    currentControllers = currentControllers.filter(c => c !== controller);
+  }
+}
+
+  async function doOneRequestWithRetry(payload, maxRetry){
+  let retryCount = 0;
+
+  while (!stopRequested) {
+    const r = await doOneRequest(payload);
+
+    if (r.ok) {
+      return { ok:true, retryTotal: retryCount };
+    }
+
+    if (r.aborted) {
+      return { ok:false, aborted:true, retryTotal: retryCount };
+    }
+
+    if (retryCount < maxRetry) {
+      retryCount++;
+      setStatus(`이미지가 없어 재시도 중… ${retryCount}/${maxRetry}`, 'err');
+      await delay(RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (r.message) setStatus(r.message, 'err');
+    return { ok:false, retryTotal: retryCount };
   }
 
-  async function doOneRequestWithRetry(payload, maxSafetyRetry){
-    let retryInternal = 0;
-    let retrySafety = 0;
-    let retryTotal = 0;
-
-    while (!stopRequested) {
-      const r = await doOneRequest(payload);
-      if (r.ok) return { ok:true, retryTotal };
-      if (r.aborted) return { ok:false, aborted:true };
-
-      if (r.type === 'internal' && retryInternal < MAX_INTERNAL) {
-        retryInternal++;
-        retryTotal++;
-        setStatus(`서버 내부 오류… ${RETRY_DELAY_SEC}초 후 재시도 ${retryInternal}/${MAX_INTERNAL}`, 'err');
-        await delay(RETRY_DELAY_MS);
-        continue;
-      }
-      if (r.type === 'safety' && retrySafety < maxSafetyRetry) {
-        retrySafety++;
-        retryTotal++;
-        setStatus(`IMAGE_SAFETY… ${RETRY_DELAY_SEC}초 후 재시도 ${retrySafety}/${maxSafetyRetry}`, 'err');
-        await delay(RETRY_DELAY_MS);
-        continue;
-      }
-      if (r.message) setStatus(r.message, 'err');
-      return { ok:false, retryTotal };
-    }
-    return { ok:false, aborted:true };
-  }
+  return { ok:false, aborted:true, retryTotal: retryCount };
+}
 
   function delay(ms){
     return new Promise(async resolve => {
