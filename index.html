@@ -56,7 +56,7 @@
   <div id="refStrip"></div>
 
   <label for="prompt">프롬프트</label>
-  <textarea id="prompt">(예시) 캐릭터 다른 포즈, SD풍, 1:1</textarea>
+  <textarea id="prompt"></textarea>
 
   <div class="row">
     <button id="genz-e" class="btn">e→3</button>
@@ -376,7 +376,7 @@
     if (it) window.open(`data:${it.mime};base64,${it.base64}`, '_blank');
   };
 
-  const WATCHDOG_MS = 120000;
+  const WATCHDOG_MS = 600000;
   const RETRY_DELAY_MS = 1000;
   const RETRY_DELAY_SEC = Math.round(RETRY_DELAY_MS / 1000);
   const MAX_INTERNAL = 10;
